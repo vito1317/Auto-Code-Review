@@ -1,0 +1,229 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\Setting;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+
+class JulesApiService
+{
+    private const BASE_URL = 'https://jules.googleapis.com/v1alpha';
+
+    private ?string $apiKey = null;
+
+    /**
+     * Get the API key from settings.
+     */
+    private function getApiKey(): string
+    {
+        if ($this->apiKey === null) {
+            $this->apiKey = trim((string) Setting::getValue('jules_api_key', config('services.jules.api_key', '')));
+        }
+
+        return $this->apiKey;
+    }
+
+    /**
+     * Make an authenticated request to the Jules API.
+     */
+    private function request(string $method, string $endpoint, array $data = []): array
+    {
+        $url = self::BASE_URL . $endpoint;
+        $apiKey = $this->getApiKey();
+
+        Log::debug('Jules API request', [
+            'method' => $method,
+            'endpoint' => $endpoint,
+            'api_key_length' => strlen($apiKey),
+        ]);
+
+        if ($method === 'get') {
+            // GET: send data as query params, no Content-Type needed
+            $response = Http::withHeaders([
+                'X-Goog-Api-Key' => $apiKey,
+            ])->get($url, $data);
+        } else {
+            // POST/PUT: send data as JSON body
+            $response = Http::withHeaders([
+                'X-Goog-Api-Key' => $apiKey,
+            ])->asJson()->post($url, $data);
+        }
+
+        if ($response->failed()) {
+            Log::error('Jules API request failed', [
+                'endpoint' => $endpoint,
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]);
+
+            throw new \RuntimeException(
+                "Jules API error ({$response->status()}): {$response->body()}"
+            );
+        }
+
+        return $response->json() ?? [];
+    }
+
+    /**
+     * List all available sources (GitHub repositories).
+     * GET /v1alpha/sources
+     */
+    public function listSources(?string $pageToken = null): array
+    {
+        $params = [];
+        if ($pageToken) {
+            $params['pageToken'] = $pageToken;
+        }
+
+        return $this->request('get', '/sources', $params);
+    }
+
+    /**
+     * Get a specific source.
+     * GET /v1alpha/{name}
+     */
+    public function getSource(string $name): array
+    {
+        return $this->request('get', "/{$name}");
+    }
+
+    /**
+     * Create a new session (triggers Jules to work on a task).
+     * POST /v1alpha/sessions
+     *
+     * @param string $source          Source name (e.g., "sources/github/owner/repo")
+     * @param string $prompt          The task prompt for Jules
+     * @param string $branch          Starting branch (default: "main")
+     * @param string $automationMode  AUTO_CREATE_PR or empty
+     * @param bool   $requirePlanApproval  Whether to require plan approval
+     * @param string|null $title      Optional session title
+     */
+    public function createSession(
+        string $source,
+        string $prompt,
+        string $branch = 'main',
+        string $automationMode = 'AUTO_CREATE_PR',
+        bool $requirePlanApproval = false,
+        ?string $title = null,
+    ): array {
+        $payload = [
+            'prompt' => $prompt,
+            'sourceContext' => [
+                'source' => $source,
+                'githubRepoContext' => [
+                    'startingBranch' => $branch,
+                ],
+            ],
+        ];
+
+        if ($automationMode) {
+            $payload['automationMode'] = $automationMode;
+        }
+
+        if ($requirePlanApproval) {
+            $payload['requirePlanApproval'] = true;
+        }
+
+        if ($title) {
+            $payload['title'] = $title;
+        }
+
+        return $this->request('post', '/sessions', $payload);
+    }
+
+    /**
+     * Get a specific session by ID.
+     * GET /v1alpha/sessions/{id}
+     */
+    public function getSession(string $sessionId): array
+    {
+        return $this->request('get', "/sessions/{$sessionId}");
+    }
+
+    /**
+     * List sessions.
+     * GET /v1alpha/sessions
+     */
+    public function listSessions(int $pageSize = 10, ?string $pageToken = null): array
+    {
+        $params = ['pageSize' => $pageSize];
+        if ($pageToken) {
+            $params['pageToken'] = $pageToken;
+        }
+
+        return $this->request('get', '/sessions', $params);
+    }
+
+    /**
+     * Approve a session's plan.
+     * POST /v1alpha/sessions/{id}:approvePlan
+     */
+    public function approvePlan(string $sessionId): array
+    {
+        return $this->request('post', "/sessions/{$sessionId}:approvePlan");
+    }
+
+    /**
+     * Send a message to a session (interact with Jules agent).
+     * POST /v1alpha/sessions/{id}:sendMessage
+     */
+    public function sendMessage(string $sessionId, string $prompt): array
+    {
+        return $this->request('post', "/sessions/{$sessionId}:sendMessage", [
+            'prompt' => $prompt,
+        ]);
+    }
+
+    /**
+     * List activities for a session.
+     * GET /v1alpha/sessions/{id}/activities
+     */
+    public function listActivities(string $sessionId, int $pageSize = 30): array
+    {
+        return $this->request('get', "/sessions/{$sessionId}/activities", [
+            'pageSize' => $pageSize,
+        ]);
+    }
+
+    /**
+     * Check if a session has completed and extract outputs.
+     */
+    public function getSessionOutputs(string $sessionId): ?array
+    {
+        $session = $this->getSession($sessionId);
+
+        // Check activities for sessionCompleted
+        $activities = $this->listActivities($sessionId);
+
+        foreach ($activities['activities'] ?? [] as $activity) {
+            if (isset($activity['sessionCompleted'])) {
+                return [
+                    'completed' => true,
+                    'session' => $session,
+                    'artifacts' => $activity['artifacts'] ?? [],
+                ];
+            }
+        }
+
+        return [
+            'completed' => false,
+            'session' => $session,
+            'artifacts' => [],
+        ];
+    }
+
+    /**
+     * Extract PR URL from session outputs.
+     */
+    public function extractPrUrl(array $session): ?string
+    {
+        foreach ($session['outputs'] ?? [] as $output) {
+            if (isset($output['pullRequest']['url'])) {
+                return $output['pullRequest']['url'];
+            }
+        }
+
+        return null;
+    }
+}
