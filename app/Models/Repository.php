@@ -29,6 +29,16 @@ class Repository extends Model
     }
 
     /**
+     * Get review tasks that resulted in auto-fix PRs.
+     */
+    public function fixedTasks(): HasMany
+    {
+        return $this->hasMany(ReviewTask::class)
+            ->where('status', 'fixed')
+            ->whereNotNull('jules_fix_pr_url');
+    }
+
+    /**
      * Get the Jules source identifier for this repository.
      */
     public function getJulesSourceIdentifier(): string

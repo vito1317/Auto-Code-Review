@@ -15,8 +15,11 @@ class Settings extends Page implements HasForms
     use InteractsWithForms;
 
     protected static ?string $navigationIcon = 'heroicon-o-cog-6-tooth';
+
     protected static ?string $navigationGroup = 'Configuration';
+
     protected static ?int $navigationSort = 10;
+
     protected static string $view = 'filament.pages.settings';
 
     public ?array $data = [];
@@ -26,6 +29,7 @@ class Settings extends Page implements HasForms
         $this->form->fill([
             'jules_api_key' => Setting::getValue('jules_api_key', ''),
             'github_token' => Setting::getValue('github_token', ''),
+            'github_webhook_secret' => Setting::getValue('github_webhook_secret', ''),
             'gemini_api_key' => Setting::getValue('gemini_api_key', ''),
             'ai_provider' => Setting::getValue('ai_provider', 'gemini'),
             'lmstudio_base_url' => Setting::getValue('lmstudio_base_url', 'http://localhost:1234'),
@@ -63,10 +67,27 @@ class Settings extends Page implements HasForms
                                     ->helperText('Needs `repo` and `pull_request:write` scopes')
                                     ->placeholder('ghp_xxxxxxxxxxxx'),
 
-                                Forms\Components\Placeholder::make('webhook_url')
-                                    ->label('Webhook URL')
-                                    ->content(url('/api/webhooks/github'))
-                                    ->helperText('Add this URL as a webhook in your GitHub repository settings. Select "Pull requests" events.'),
+                                Forms\Components\Section::make('Webhook')
+                                    ->description('All repositories share this webhook configuration')
+                                    ->schema([
+                                        Forms\Components\Placeholder::make('webhook_url')
+                                            ->label('Webhook URL')
+                                            ->content(url('/api/webhooks/github'))
+                                            ->helperText('Add this URL as a webhook in your GitHub repository settings. Select "Pull requests" events.'),
+
+                                        Forms\Components\TextInput::make('github_webhook_secret')
+                                            ->label('Webhook Secret')
+                                            ->password()
+                                            ->revealable()
+                                            ->helperText('Use this same secret for all GitHub webhook configurations.')
+                                            ->suffixAction(
+                                                Forms\Components\Actions\Action::make('regenerate_webhook_secret')
+                                                    ->icon('heroicon-o-arrow-path')
+                                                    ->action(function (Forms\Set $set) {
+                                                        $set('github_webhook_secret', \Illuminate\Support\Str::random(40));
+                                                    })
+                                            ),
+                                    ]),
                             ]),
 
                         Forms\Components\Tabs\Tab::make('AI Review Engine')
@@ -96,7 +117,7 @@ class Settings extends Page implements HasForms
                                             ->default('gemini-2.0-flash')
                                             ->helperText('e.g., gemini-2.0-flash, gemini-1.5-pro'),
                                     ])
-                                    ->visible(fn(Forms\Get $get) => $get('ai_provider') === 'gemini'),
+                                    ->visible(fn (Forms\Get $get) => $get('ai_provider') === 'gemini'),
 
                                 Forms\Components\Section::make('LM Studio Settings')
                                     ->schema([
@@ -110,7 +131,7 @@ class Settings extends Page implements HasForms
                                             ->placeholder('Leave blank for default loaded model')
                                             ->helperText('The model identifier loaded in LM Studio'),
                                     ])
-                                    ->visible(fn(Forms\Get $get) => $get('ai_provider') === 'lmstudio'),
+                                    ->visible(fn (Forms\Get $get) => $get('ai_provider') === 'lmstudio'),
                             ]),
 
                         Forms\Components\Tabs\Tab::make('Auto-Fix')
@@ -142,6 +163,7 @@ class Settings extends Page implements HasForms
         // Save each setting
         Setting::setValue('jules_api_key', $data['jules_api_key'] ?? '', 'jules', 'Jules API Key');
         Setting::setValue('github_token', $data['github_token'] ?? '', 'github', 'GitHub Personal Access Token');
+        Setting::setValue('github_webhook_secret', $data['github_webhook_secret'] ?? '', 'github', 'GitHub Webhook Secret');
         Setting::setValue('gemini_api_key', $data['gemini_api_key'] ?? '', 'gemini', 'Gemini API Key');
         Setting::setValue('ai_provider', $data['ai_provider'] ?? 'gemini', 'general', 'AI Provider');
         Setting::setValue('lmstudio_base_url', $data['lmstudio_base_url'] ?? 'http://localhost:1234', 'general', 'LM Studio Base URL');

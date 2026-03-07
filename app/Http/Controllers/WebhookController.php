@@ -33,8 +33,9 @@ class WebhookController extends Controller
         $action = $data['action'] ?? '';
 
         // Only process opened and synchronize (new commits pushed) actions
-        if (!in_array($action, ['opened', 'synchronize'])) {
+        if (! in_array($action, ['opened', 'synchronize'])) {
             Log::info('PR action ignored', ['action' => $action]);
+
             return response('Action ignored', 200);
         }
 
@@ -50,16 +51,19 @@ class WebhookController extends Controller
             ->where('is_active', true)
             ->first();
 
-        if (!$repository) {
+        if (! $repository) {
             Log::info('Repository not configured or inactive', ['owner' => $owner, 'repo' => $repo]);
+
             return response('Repository not configured', 200);
         }
 
-        // Verify webhook signature if secret is configured
-        if ($repository->webhook_secret) {
+        // Verify webhook signature using global webhook secret
+        $webhookSecret = \App\Models\Setting::getValue('github_webhook_secret', '');
+        if ($webhookSecret) {
             $signature = $request->header('X-Hub-Signature-256', '');
-            if (!$github->verifyWebhookSignature($payload, $signature, $repository->webhook_secret)) {
+            if (! $github->verifyWebhookSignature($payload, $signature, $webhookSecret)) {
                 Log::warning('Invalid webhook signature', ['owner' => $owner, 'repo' => $repo]);
+
                 return response('Invalid signature', 403);
             }
         }

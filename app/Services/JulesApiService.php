@@ -29,7 +29,7 @@ class JulesApiService
      */
     private function request(string $method, string $endpoint, array $data = []): array
     {
-        $url = self::BASE_URL . $endpoint;
+        $url = self::BASE_URL.$endpoint;
         $apiKey = $this->getApiKey();
 
         Log::debug('Jules API request', [
@@ -92,12 +92,12 @@ class JulesApiService
      * Create a new session (triggers Jules to work on a task).
      * POST /v1alpha/sessions
      *
-     * @param string $source          Source name (e.g., "sources/github/owner/repo")
-     * @param string $prompt          The task prompt for Jules
-     * @param string $branch          Starting branch (default: "main")
-     * @param string $automationMode  AUTO_CREATE_PR or empty
-     * @param bool   $requirePlanApproval  Whether to require plan approval
-     * @param string|null $title      Optional session title
+     * @param  string  $source  Source name (e.g., "sources/github/owner/repo")
+     * @param  string  $prompt  The task prompt for Jules
+     * @param  string  $branch  Starting branch (default: "main")
+     * @param  string  $automationMode  AUTO_CREATE_PR or empty
+     * @param  bool  $requirePlanApproval  Whether to require plan approval
+     * @param  string|null  $title  Optional session title
      */
     public function createSession(
         string $source,
@@ -222,6 +222,36 @@ class JulesApiService
             if (isset($output['pullRequest']['url'])) {
                 return $output['pullRequest']['url'];
             }
+        }
+
+        return null;
+    }
+
+    /**
+     * Extract the branch name Jules created from session outputs or activities.
+     */
+    public function extractBranchName(array $session): ?string
+    {
+        // Check outputs for branch info
+        foreach ($session['outputs'] ?? [] as $output) {
+            if (isset($output['pullRequest']['headBranch'])) {
+                return $output['pullRequest']['headBranch'];
+            }
+            if (isset($output['branch'])) {
+                return $output['branch'];
+            }
+        }
+
+        // Check sourceContext for branch info
+        if (isset($session['sourceContext']['githubRepoContext']['workingBranch'])) {
+            return $session['sourceContext']['githubRepoContext']['workingBranch'];
+        }
+
+        // Fallback: try to find branch from session title/name
+        $sessionId = $session['name'] ?? $session['id'] ?? '';
+        if ($sessionId) {
+            // Jules typically creates branches like jules/session-id
+            return "jules/{$sessionId}";
         }
 
         return null;

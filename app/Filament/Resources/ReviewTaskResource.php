@@ -15,9 +15,13 @@ use Filament\Tables\Table;
 class ReviewTaskResource extends Resource
 {
     protected static ?string $model = ReviewTask::class;
+
     protected static ?string $navigationIcon = 'heroicon-o-clipboard-document-check';
+
     protected static ?string $navigationLabel = 'Review Tasks';
+
     protected static ?string $navigationGroup = 'Reviews';
+
     protected static ?int $navigationSort = 1;
 
     public static function form(Form $form): Form
@@ -62,7 +66,7 @@ class ReviewTaskResource extends Resource
                         ->columnSpanFull(),
                     Infolists\Components\TextEntry::make('pr_url')
                         ->label('URL')
-                        ->url(fn($record) => $record->pr_url)
+                        ->url(fn ($record) => $record->pr_url)
                         ->openUrlInNewTab()
                         ->badge()
                         ->color('info'),
@@ -82,7 +86,7 @@ class ReviewTaskResource extends Resource
                 ->schema([
                     Infolists\Components\TextEntry::make('status')
                         ->badge()
-                        ->color(fn(string $state) => match ($state) {
+                        ->color(fn (string $state) => match ($state) {
                             'pending' => 'gray',
                             'reviewing' => 'info',
                             'commented' => 'warning',
@@ -106,7 +110,7 @@ class ReviewTaskResource extends Resource
                         ->markdown()
                         ->columnSpanFull(),
                 ])
-                ->visible(fn($record) => $record->review_summary),
+                ->visible(fn ($record) => $record->review_summary),
 
             Infolists\Components\Section::make('Jules Auto-Fix')
                 ->schema([
@@ -114,13 +118,13 @@ class ReviewTaskResource extends Resource
                         ->label('Session ID'),
                     Infolists\Components\TextEntry::make('jules_fix_pr_url')
                         ->label('Fix PR')
-                        ->url(fn($record) => $record->jules_fix_pr_url)
+                        ->url(fn ($record) => $record->jules_fix_pr_url)
                         ->openUrlInNewTab()
                         ->badge()
                         ->color('success')
-                        ->visible(fn($record) => $record->jules_fix_pr_url),
+                        ->visible(fn ($record) => $record->jules_fix_pr_url),
                 ])
-                ->visible(fn($record) => $record->jules_session_id),
+                ->visible(fn ($record) => $record->jules_session_id),
 
             Infolists\Components\Section::make('Error')
                 ->schema([
@@ -128,7 +132,52 @@ class ReviewTaskResource extends Resource
                         ->label('')
                         ->color('danger'),
                 ])
-                ->visible(fn($record) => $record->error_message),
+                ->visible(fn ($record) => $record->error_message),
+
+            Infolists\Components\Section::make('Review Findings')
+                ->description(fn ($record) => $record->comments->count() . ' issue(s) found')
+                ->schema([
+                    Infolists\Components\RepeatableEntry::make('comments')
+                        ->label('')
+                        ->schema([
+                            Infolists\Components\TextEntry::make('severity')
+                                ->badge()
+                                ->color(fn (string $state) => match ($state) {
+                                    'critical' => 'danger',
+                                    'warning' => 'warning',
+                                    'suggestion' => 'info',
+                                    default => 'gray',
+                                }),
+                            Infolists\Components\TextEntry::make('file_path')
+                                ->label('File')
+                                ->icon('heroicon-o-document-text'),
+                            Infolists\Components\TextEntry::make('line_number')
+                                ->label('Line')
+                                ->placeholder('—'),
+                            Infolists\Components\TextEntry::make('category')
+                                ->badge()
+                                ->color('gray'),
+                            Infolists\Components\TextEntry::make('body')
+                                ->label('Details')
+                                ->markdown()
+                                ->columnSpanFull(),
+                        ])
+                        ->columns(4),
+                ])
+                ->visible(fn ($record) => $record->comments->count() > 0)
+                ->collapsible(),
+
+            Infolists\Components\Section::make('Diff Content')
+                ->schema([
+                    Infolists\Components\TextEntry::make('diff_content')
+                        ->label('')
+                        ->formatStateUsing(fn (?string $state) => $state ? '```diff' . "\n" . $state . "\n" . '```' : 'No diff available')
+                        ->markdown()
+                        ->columnSpanFull(),
+                ])
+                ->visible(fn ($record) => $record->diff_content)
+                ->collapsible()
+                ->collapsed(),
         ]);
     }
 
@@ -144,8 +193,8 @@ class ReviewTaskResource extends Resource
 
                 Tables\Columns\TextColumn::make('pr_number')
                     ->label('PR #')
-                    ->formatStateUsing(fn($state, $record) => "#{$state}")
-                    ->url(fn($record) => $record->pr_url)
+                    ->formatStateUsing(fn ($state, $record) => "#{$state}")
+                    ->url(fn ($record) => $record->pr_url)
                     ->openUrlInNewTab()
                     ->color('info'),
 
@@ -161,7 +210,7 @@ class ReviewTaskResource extends Resource
 
                 Tables\Columns\TextColumn::make('status')
                     ->badge()
-                    ->color(fn(string $state) => match ($state) {
+                    ->color(fn (string $state) => match ($state) {
                         'pending' => 'gray',
                         'reviewing' => 'info',
                         'commented' => 'warning',
@@ -180,6 +229,13 @@ class ReviewTaskResource extends Resource
                     ->label('Issues')
                     ->counts('comments')
                     ->alignCenter(),
+
+                Tables\Columns\TextColumn::make('jules_fix_pr_url')
+                    ->label('Fix PR')
+                    ->formatStateUsing(fn (?string $state) => $state ? '🔧 View PR' : '—')
+                    ->url(fn ($record) => $record->jules_fix_pr_url)
+                    ->openUrlInNewTab()
+                    ->color(fn (?string $state) => $state ? 'success' : 'gray'),
 
                 Tables\Columns\TextColumn::make('created_at')
                     ->label('Created')
@@ -207,7 +263,7 @@ class ReviewTaskResource extends Resource
                     ->icon('heroicon-o-arrow-path')
                     ->color('warning')
                     ->requiresConfirmation()
-                    ->visible(fn(ReviewTask $record) => in_array($record->status, ['failed', 'commented']))
+                    ->visible(fn (ReviewTask $record) => in_array($record->status, ['failed', 'commented']))
                     ->action(function (ReviewTask $record) {
                         $record->update([
                             'status' => ReviewTask::STATUS_PENDING,
@@ -219,9 +275,10 @@ class ReviewTaskResource extends Resource
                 Tables\Actions\Action::make('view_github')
                     ->label('View PR')
                     ->icon('heroicon-o-arrow-top-right-on-square')
-                    ->url(fn(ReviewTask $record) => $record->pr_url)
+                    ->url(fn (ReviewTask $record) => $record->pr_url)
                     ->openUrlInNewTab(),
-            ]);
+            ])
+            ->bulkActions([]);
     }
 
     public static function getPages(): array

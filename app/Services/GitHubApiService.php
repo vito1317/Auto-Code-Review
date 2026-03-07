@@ -29,7 +29,7 @@ class GitHubApiService
      */
     private function request(string $method, string $endpoint, array $data = [], array $headers = []): mixed
     {
-        $url = self::BASE_URL . $endpoint;
+        $url = self::BASE_URL.$endpoint;
 
         $defaultHeaders = [
             'Authorization' => "Bearer {$this->getToken()}",
@@ -89,8 +89,8 @@ class GitHubApiService
     /**
      * Create a review on a pull request.
      *
-     * @param string $event  COMMENT, APPROVE, or REQUEST_CHANGES
-     * @param array  $comments  Array of line-specific comments [{path, position, body}]
+     * @param  string  $event  COMMENT, APPROVE, or REQUEST_CHANGES
+     * @param  array  $comments  Array of line-specific comments [{path, position, body}]
      */
     public function createReview(
         string $owner,
@@ -105,7 +105,7 @@ class GitHubApiService
             'body' => $body,
         ];
 
-        if (!empty($comments)) {
+        if (! empty($comments)) {
             $payload['comments'] = $comments;
         }
 
@@ -145,6 +145,35 @@ class GitHubApiService
     }
 
     /**
+     * Create a pull request.
+     */
+    public function createPullRequest(
+        string $owner,
+        string $repo,
+        string $title,
+        string $head,
+        string $base,
+        string $body = '',
+    ): array {
+        return $this->request('post', "/repos/{$owner}/{$repo}/pulls", [
+            'title' => $title,
+            'head' => $head,
+            'base' => $base,
+            'body' => $body,
+        ]);
+    }
+
+    /**
+     * List branches for a repository.
+     */
+    public function listBranches(string $owner, string $repo, int $perPage = 100): array
+    {
+        return $this->request('get', "/repos/{$owner}/{$repo}/branches", [
+            'per_page' => $perPage,
+        ]);
+    }
+
+    /**
      * Verify a GitHub webhook signature.
      */
     public function verifyWebhookSignature(string $payload, string $signature, string $secret): bool
@@ -153,7 +182,7 @@ class GitHubApiService
             return false;
         }
 
-        $expectedSignature = 'sha256=' . hash_hmac('sha256', $payload, $secret);
+        $expectedSignature = 'sha256='.hash_hmac('sha256', $payload, $secret);
 
         return hash_equals($expectedSignature, $signature);
     }

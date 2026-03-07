@@ -8,7 +8,6 @@ use App\Services\JulesApiService;
 use Filament\Actions;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ListRecords;
-use Illuminate\Support\Str;
 
 class ListRepositories extends ListRecords
 {
@@ -39,18 +38,21 @@ class ListRepositories extends ListRecords
 
                             foreach ($sources as $source) {
                                 $ghRepo = $source['githubRepo'] ?? null;
-                                if (!$ghRepo)
+                                if (! $ghRepo) {
                                     continue;
+                                }
 
                                 $owner = $ghRepo['owner'] ?? '';
                                 $repo = $ghRepo['repo'] ?? '';
 
-                                if (empty($owner) || empty($repo))
+                                if (empty($owner) || empty($repo)) {
                                     continue;
+                                }
 
                                 // Skip if already exists
                                 if (Repository::where('owner', $owner)->where('repo', $repo)->exists()) {
                                     $skipped++;
+
                                     continue;
                                 }
 
@@ -60,7 +62,6 @@ class ListRepositories extends ListRecords
                                     'repo' => $repo,
                                     'jules_source' => $source['name'] ?? "sources/github/{$owner}/{$repo}",
                                     'default_branch' => 'main',
-                                    'webhook_secret' => Str::random(40),
                                     'is_active' => true,
                                 ]);
 
@@ -69,7 +70,7 @@ class ListRepositories extends ListRecords
                         } while ($pageToken);
 
                         Notification::make()
-                            ->title("Sync Complete")
+                            ->title('Sync Complete')
                             ->body("Imported: {$imported}, Skipped (already exists): {$skipped}")
                             ->success()
                             ->send();

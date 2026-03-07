@@ -16,11 +16,6 @@ class CreateRepository extends CreateRecord
             $data['jules_source'] = "sources/github/{$data['owner']}/{$data['repo']}";
         }
 
-        // Auto-generate webhook secret if not provided
-        if (empty($data['webhook_secret'])) {
-            $data['webhook_secret'] = \Illuminate\Support\Str::random(40);
-        }
-
         return $data;
     }
 }

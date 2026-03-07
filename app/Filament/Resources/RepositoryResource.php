@@ -13,8 +13,11 @@ use Filament\Tables\Table;
 class RepositoryResource extends Resource
 {
     protected static ?string $model = Repository::class;
+
     protected static ?string $navigationIcon = 'heroicon-o-code-bracket-square';
+
     protected static ?string $navigationGroup = 'Configuration';
+
     protected static ?int $navigationSort = 1;
 
     public static function form(Form $form): Form
@@ -53,29 +56,6 @@ class RepositoryResource extends Resource
                         ->placeholder('sources/github/owner/repo')
                         ->helperText('Leave blank to auto-generate from owner/repo')
                         ->maxLength(500),
-                ]),
-
-            Forms\Components\Section::make('Webhook')
-                ->description('Configure GitHub webhook integration')
-                ->schema([
-                    Forms\Components\TextInput::make('webhook_secret')
-                        ->label('Webhook Secret')
-                        ->password()
-                        ->revealable()
-                        ->default(fn() => \Illuminate\Support\Str::random(40))
-                        ->helperText('Auto-generated. Copy this value to your GitHub webhook settings.')
-                        ->suffixAction(
-                            Forms\Components\Actions\Action::make('regenerate')
-                                ->icon('heroicon-o-arrow-path')
-                                ->action(function (Forms\Set $set) {
-                                    $set('webhook_secret', \Illuminate\Support\Str::random(40));
-                                })
-                        ),
-
-                    Forms\Components\Placeholder::make('webhook_url')
-                        ->label('Webhook URL')
-                        ->content(fn() => url('/api/webhooks/github'))
-                        ->helperText('Use this URL in your GitHub repository webhook settings'),
                 ]),
 
             Forms\Components\Section::make('Settings')
@@ -120,6 +100,13 @@ class RepositoryResource extends Resource
                     ->counts('reviewTasks')
                     ->sortable(),
 
+                Tables\Columns\TextColumn::make('fixed_tasks_count')
+                    ->label('Auto PRs')
+                    ->counts('fixedTasks')
+                    ->sortable()
+                    ->badge()
+                    ->color(fn (int $state) => $state > 0 ? 'success' : 'gray'),
+
                 Tables\Columns\TextColumn::make('created_at')
                     ->dateTime('Y-m-d H:i')
                     ->sortable()
@@ -132,11 +119,11 @@ class RepositoryResource extends Resource
             ->actions([
                 Tables\Actions\EditAction::make(),
                 Tables\Actions\Action::make('toggle_active')
-                    ->label(fn(Repository $record) => $record->is_active ? 'Deactivate' : 'Activate')
-                    ->icon(fn(Repository $record) => $record->is_active ? 'heroicon-o-pause' : 'heroicon-o-play')
-                    ->color(fn(Repository $record) => $record->is_active ? 'warning' : 'success')
+                    ->label(fn (Repository $record) => $record->is_active ? 'Deactivate' : 'Activate')
+                    ->icon(fn (Repository $record) => $record->is_active ? 'heroicon-o-pause' : 'heroicon-o-play')
+                    ->color(fn (Repository $record) => $record->is_active ? 'warning' : 'success')
                     ->requiresConfirmation()
-                    ->action(fn(Repository $record) => $record->update(['is_active' => !$record->is_active])),
+                    ->action(fn (Repository $record) => $record->update(['is_active' => ! $record->is_active])),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([

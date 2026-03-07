@@ -87,7 +87,45 @@ class CodeReviewService
             ],
             'temperature' => 0.3,
             'max_tokens' => 4096,
-            'response_format' => ['type' => 'json_object'],
+            'tools' => [
+                [
+                    'type' => 'function',
+                    'function' => [
+                        'name' => 'submit_review',
+                        'description' => 'Submit the code review results',
+                        'parameters' => [
+                            'type' => 'object',
+                            'properties' => [
+                                'summary' => ['type' => 'string', 'description' => 'Brief overall review summary'],
+                                'overall_quality' => [
+                                    'type' => 'string',
+                                    'enum' => ['good', 'acceptable', 'needs-improvement', 'poor'],
+                                    'description' => 'Overall code quality rating',
+                                ],
+                                'findings' => [
+                                    'type' => 'array',
+                                    'description' => 'List of issues found',
+                                    'items' => [
+                                        'type' => 'object',
+                                        'properties' => [
+                                            'file_path' => ['type' => 'string'],
+                                            'line_number' => ['type' => 'integer'],
+                                            'severity' => ['type' => 'string', 'enum' => ['critical', 'warning', 'suggestion', 'info']],
+                                            'category' => ['type' => 'string', 'enum' => ['security', 'performance', 'bug', 'style', 'error-handling', 'documentation', 'testing']],
+                                            'title' => ['type' => 'string'],
+                                            'body' => ['type' => 'string'],
+                                            'suggestion' => ['type' => 'string'],
+                                        ],
+                                        'required' => ['file_path', 'severity', 'category', 'title', 'body'],
+                                    ],
+                                ],
+                            ],
+                            'required' => ['summary', 'overall_quality', 'findings'],
+                        ],
+                    ],
+                ],
+            ],
+            'tool_choice' => ['type' => 'function', 'function' => ['name' => 'submit_review']],
         ];
 
         $response = Http::timeout(180)->post($url, $payload);
@@ -97,6 +135,15 @@ class CodeReviewService
             throw new \RuntimeException("LM Studio API error ({$response->status()}): {$response->body()}");
         }
 
+        // Parse tool call response
+        $toolCalls = $response->json('choices.0.message.tool_calls', []);
+        if (! empty($toolCalls)) {
+            $args = $toolCalls[0]['function']['arguments'] ?? '{}';
+
+            return $this->parseJsonResponse($args);
+        }
+
+        // Fallback: try parsing message content directly
         $text = $response->json('choices.0.message.content', '{}');
 
         return $this->parseJsonResponse($text);
@@ -172,8 +219,24 @@ PROMPT;
 
     private function parseJsonResponse(string $text): array
     {
+        // Strip markdown code fences (```json ... ``` or ``` ... ```)
+        $text = trim($text);
+        if (preg_match('/```(?:json)?\s*\n?(.*?)\n?\s*```/s', $text, $matches)) {
+            $text = trim($matches[1]);
+        }
+
+        // Try to extract JSON object if surrounded by other text
+        if (! str_starts_with($text, '{')) {
+            $start = strpos($text, '{');
+            $end = strrpos($text, '}');
+            if ($start !== false && $end !== false && $end > $start) {
+                $text = substr($text, $start, $end - $start + 1);
+            }
+        }
+
         try {
             $parsed = json_decode($text, true, 512, JSON_THROW_ON_ERROR);
+
             return [
                 'summary' => $parsed['summary'] ?? '',
                 'overall_quality' => $parsed['overall_quality'] ?? 'acceptable',
@@ -181,6 +244,7 @@ PROMPT;
             ];
         } catch (\JsonException $e) {
             Log::warning('Failed to parse AI review response', ['text' => substr($text, 0, 500), 'error' => $e->getMessage()]);
+
             return ['summary' => '', 'overall_quality' => 'unknown', 'findings' => []];
         }
     }
