@@ -125,7 +125,7 @@ class CodeReviewService
                     ],
                 ],
             ],
-            'tool_choice' => ['type' => 'function', 'function' => ['name' => 'submit_review']],
+            'tool_choice' => 'required',
         ];
 
         $response = Http::timeout(180)->post($url, $payload);
@@ -136,15 +136,30 @@ class CodeReviewService
         }
 
         // Parse tool call response
-        $toolCalls = $response->json('choices.0.message.tool_calls', []);
+        $responseData = $response->json();
+        Log::debug('LM Studio raw response', [
+            'finish_reason' => $responseData['choices'][0]['finish_reason'] ?? null,
+            'has_tool_calls' => ! empty($responseData['choices'][0]['message']['tool_calls'] ?? []),
+            'content_preview' => substr($responseData['choices'][0]['message']['content'] ?? '', 0, 500),
+            'tool_calls_preview' => json_encode(array_map(function ($tc) {
+                return [
+                    'name' => $tc['function']['name'] ?? null,
+                    'args_length' => strlen($tc['function']['arguments'] ?? ''),
+                    'args_preview' => substr($tc['function']['arguments'] ?? '', 0, 300),
+                ];
+            }, $responseData['choices'][0]['message']['tool_calls'] ?? [])),
+        ]);
+
+        $toolCalls = $responseData['choices'][0]['message']['tool_calls'] ?? [];
         if (! empty($toolCalls)) {
             $args = $toolCalls[0]['function']['arguments'] ?? '{}';
-
-            return $this->parseJsonResponse($args);
+            if (! empty($args) && $args !== '{}') {
+                return $this->parseJsonResponse($args);
+            }
         }
 
         // Fallback: try parsing message content directly
-        $text = $response->json('choices.0.message.content', '{}');
+        $text = $responseData['choices'][0]['message']['content'] ?? '{}';
 
         return $this->parseJsonResponse($text);
     }
