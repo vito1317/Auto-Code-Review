@@ -57,6 +57,12 @@ class ReviewPrJob implements ShouldQueue
             $findings = $result['findings'] ?? [];
             $summary = $result['summary'] ?? '';
             $quality = $result['overall_quality'] ?? 'acceptable';
+            $rawOutput = $result['raw_output'] ?? null;
+
+            // Save raw AI output for debugging
+            if ($rawOutput) {
+                $task->update(['ai_raw_output' => $rawOutput]);
+            }
 
             // 4. Save findings as ReviewComment records
             foreach ($findings as $finding) {

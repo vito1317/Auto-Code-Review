@@ -178,6 +178,17 @@ class ReviewTaskResource extends Resource
                 ->visible(fn ($record) => $record->diff_content)
                 ->collapsible()
                 ->collapsed(),
+
+            Infolists\Components\Section::make('AI Raw Output')
+                ->schema([
+                    Infolists\Components\TextEntry::make('ai_raw_output')
+                        ->label('')
+                        ->markdown()
+                        ->columnSpanFull(),
+                ])
+                ->visible(fn ($record) => $record->ai_raw_output)
+                ->collapsible()
+                ->collapsed(),
         ]);
     }
 

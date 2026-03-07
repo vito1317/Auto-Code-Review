@@ -72,7 +72,6 @@ class CodeReviewService
         $baseUrl = Setting::getValue('lmstudio_base_url', 'http://localhost:1234');
         $model = Setting::getValue('lmstudio_model', 'default');
 
-        // Ensure URL ends without trailing slash
         $baseUrl = rtrim($baseUrl, '/');
         $url = "{$baseUrl}/v1/chat/completions";
 
@@ -83,49 +82,10 @@ class CodeReviewService
             'model' => $model,
             'messages' => [
                 ['role' => 'system', 'content' => $systemPrompt],
-                ['role' => 'user', 'content' => $userPrompt],
+                ['role' => 'user', 'content' => $userPrompt . "\n\nIMPORTANT: You MUST respond with ONLY a valid JSON object. No markdown, no explanation, no code fences. Just the raw JSON."],
             ],
             'temperature' => 0.3,
             'max_tokens' => 4096,
-            'tools' => [
-                [
-                    'type' => 'function',
-                    'function' => [
-                        'name' => 'submit_review',
-                        'description' => 'Submit the code review results',
-                        'parameters' => [
-                            'type' => 'object',
-                            'properties' => [
-                                'summary' => ['type' => 'string', 'description' => 'Brief overall review summary'],
-                                'overall_quality' => [
-                                    'type' => 'string',
-                                    'enum' => ['good', 'acceptable', 'needs-improvement', 'poor'],
-                                    'description' => 'Overall code quality rating',
-                                ],
-                                'findings' => [
-                                    'type' => 'array',
-                                    'description' => 'List of issues found',
-                                    'items' => [
-                                        'type' => 'object',
-                                        'properties' => [
-                                            'file_path' => ['type' => 'string'],
-                                            'line_number' => ['type' => 'integer'],
-                                            'severity' => ['type' => 'string', 'enum' => ['critical', 'warning', 'suggestion', 'info']],
-                                            'category' => ['type' => 'string', 'enum' => ['security', 'performance', 'bug', 'style', 'error-handling', 'documentation', 'testing']],
-                                            'title' => ['type' => 'string'],
-                                            'body' => ['type' => 'string'],
-                                            'suggestion' => ['type' => 'string'],
-                                        ],
-                                        'required' => ['file_path', 'severity', 'category', 'title', 'body'],
-                                    ],
-                                ],
-                            ],
-                            'required' => ['summary', 'overall_quality', 'findings'],
-                        ],
-                    ],
-                ],
-            ],
-            'tool_choice' => 'required',
         ];
 
         $response = Http::timeout(180)->post($url, $payload);
@@ -135,33 +95,17 @@ class CodeReviewService
             throw new \RuntimeException("LM Studio API error ({$response->status()}): {$response->body()}");
         }
 
-        // Parse tool call response
-        $responseData = $response->json();
-        Log::debug('LM Studio raw response', [
-            'finish_reason' => $responseData['choices'][0]['finish_reason'] ?? null,
-            'has_tool_calls' => ! empty($responseData['choices'][0]['message']['tool_calls'] ?? []),
-            'content_preview' => substr($responseData['choices'][0]['message']['content'] ?? '', 0, 500),
-            'tool_calls_preview' => json_encode(array_map(function ($tc) {
-                return [
-                    'name' => $tc['function']['name'] ?? null,
-                    'args_length' => strlen($tc['function']['arguments'] ?? ''),
-                    'args_preview' => substr($tc['function']['arguments'] ?? '', 0, 300),
-                ];
-            }, $responseData['choices'][0]['message']['tool_calls'] ?? [])),
+        $text = $response->json('choices.0.message.content', '{}');
+
+        Log::debug('LM Studio response content', [
+            'length' => strlen($text),
+            'preview' => substr($text, 0, 500),
         ]);
 
-        $toolCalls = $responseData['choices'][0]['message']['tool_calls'] ?? [];
-        if (! empty($toolCalls)) {
-            $args = $toolCalls[0]['function']['arguments'] ?? '{}';
-            if (! empty($args) && $args !== '{}') {
-                return $this->parseJsonResponse($args);
-            }
-        }
+        $parsed = $this->parseJsonResponse($text);
+        $parsed['raw_output'] = $text;
 
-        // Fallback: try parsing message content directly
-        $text = $responseData['choices'][0]['message']['content'] ?? '{}';
-
-        return $this->parseJsonResponse($text);
+        return $parsed;
     }
 
     // ──────────────────────────────────────────────────
@@ -234,7 +178,9 @@ PROMPT;
 
     private function parseJsonResponse(string $text): array
     {
-        // Strip markdown code fences (```json ... ``` or ``` ... ```)
+        // Strip Qwen-style <think>...</think> reasoning tags
+        $text = trim($text);
+        $text = preg_replace('/<think>.*?<\/think>/s', '', $text);
         $text = trim($text);
         if (preg_match('/```(?:json)?\s*\n?(.*?)\n?\s*```/s', $text, $matches)) {
             $text = trim($matches[1]);

@@ -18,6 +18,7 @@ class ReviewTask extends Model
         'jules_session_id',
         'jules_fix_pr_url',
         'review_summary',
+        'ai_raw_output',
         'diff_content',
         'iteration',
         'error_message',
