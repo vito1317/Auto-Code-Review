@@ -16,3 +16,19 @@ Schedule::command('review:poll')->everyTenMinutes();
 
 // Retry auto-merge for approved tasks every 10 minutes
 Schedule::command('review:auto-merge')->everyTenMinutes();
+
+// Ensure merges queue workers are always running (2 workers)
+Schedule::call(function () {
+    $workerCount = (int) trim(shell_exec("ps aux | grep 'queue=merges' | grep -v grep | wc -l") ?? '0');
+    $desired = 2;
+    $toStart = $desired - $workerCount;
+
+    for ($i = 0; $i < $toStart; $i++) {
+        $logFile = storage_path('logs/worker-merges-'.($workerCount + $i + 1).'.log');
+        exec('nohup php '.base_path('artisan')." queue:work --sleep=3 --tries=3 --timeout=300 --max-time=3600 --queue=merges > {$logFile} 2>&1 &");
+    }
+
+    if ($toStart > 0) {
+        \Illuminate\Support\Facades\Log::info("Started {$toStart} merges queue workers (had {$workerCount}/{$desired})");
+    }
+})->everyMinute()->name('ensure-merges-workers');

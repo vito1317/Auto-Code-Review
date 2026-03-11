@@ -53,6 +53,9 @@ class AiMergeJob implements ShouldQueue
                 $repo->repo,
                 $task->pr_number,
                 $this->userId,
+                onProgress: function (string $message) use ($task) {
+                    $task->update(['ai_merge_message' => $message]);
+                },
             );
 
             if ($result['success']) {

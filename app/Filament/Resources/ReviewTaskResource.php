@@ -127,6 +127,58 @@ class ReviewTaskResource extends Resource
                 ])
                 ->visible(fn ($record) => $record->jules_session_id),
 
+            Infolists\Components\Section::make('AI Merge')
+                ->columns(2)
+                ->schema([
+                    Infolists\Components\TextEntry::make('ai_merge_status')
+                        ->label('Status')
+                        ->badge()
+                        ->color(fn (?string $state) => match ($state) {
+                            'pending' => 'warning',
+                            'processing' => 'info',
+                            'resolved' => 'success',
+                            'failed' => 'danger',
+                            default => 'gray',
+                        })
+                        ->formatStateUsing(fn (?string $state) => match ($state) {
+                            'pending' => '⏳ Pending',
+                            'processing' => '🔄 Processing',
+                            'resolved' => '✅ Resolved',
+                            'failed' => '❌ Failed',
+                            default => '—',
+                        }),
+                    Infolists\Components\TextEntry::make('ai_merge_message')
+                        ->label('Message')
+                        ->placeholder('—'),
+                ])
+                ->visible(fn ($record) => $record->ai_merge_status),
+
+            Infolists\Components\Section::make('Merge')
+                ->columns(2)
+                ->schema([
+                    Infolists\Components\TextEntry::make('merge_status')
+                        ->label('Status')
+                        ->badge()
+                        ->color(fn (?string $state) => match ($state) {
+                            'queued' => 'warning',
+                            'merging' => 'info',
+                            'merged' => 'success',
+                            'failed' => 'danger',
+                            default => 'gray',
+                        })
+                        ->formatStateUsing(fn (?string $state) => match ($state) {
+                            'queued' => '⏳ Queued',
+                            'merging' => '🔄 Merging',
+                            'merged' => '✅ Merged',
+                            'failed' => '❌ Failed',
+                            default => '—',
+                        }),
+                    Infolists\Components\TextEntry::make('merge_message')
+                        ->label('Message')
+                        ->placeholder('—'),
+                ])
+                ->visible(fn ($record) => $record->merge_status),
+
             Infolists\Components\Section::make('Error')
                 ->schema([
                     Infolists\Components\TextEntry::make('error_message')
@@ -208,6 +260,7 @@ class ReviewTaskResource extends Resource
                 }
             })
             ->defaultSort('created_at', 'desc')
+            ->poll('10s')
             ->columns([
                 Tables\Columns\TextColumn::make('repository.name')
                     ->label('Repo')

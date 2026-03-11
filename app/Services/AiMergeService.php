@@ -32,10 +32,13 @@ class AiMergeService
         string $repo,
         int $prNumber,
         ?int $userId = null,
+        ?callable $onProgress = null,
     ): array {
+        $progress = fn (string $msg) => $onProgress ? $onProgress($msg) : null;
         Log::info('AI Merge: Starting', compact('owner', 'repo', 'prNumber'));
 
         // 1. Get PR info to find head and base branches
+        $progress('Fetching PR info...');
         $pr = $this->github->getPullRequest($owner, $repo, $prNumber);
         $headBranch = $pr['head']['ref'] ?? null;
         $baseBranch = $pr['base']['ref'] ?? null;
@@ -50,6 +53,7 @@ class AiMergeService
         }
 
         // 3. Try normal merge first
+        $progress('Trying direct merge...');
         try {
             $this->github->mergePullRequest($owner, $repo, $prNumber, "Merge PR #{$prNumber}");
 
@@ -65,6 +69,7 @@ class AiMergeService
                 return ['success' => false, 'message' => 'Merge failed: '.$e->getMessage()];
             }
             Log::info('AI Merge: Conflicts detected, resolving with AI', compact('prNumber'));
+            $progress('Merge conflicts detected, comparing branches...');
         }
 
         // 3. Compare branches to find changed files
@@ -80,7 +85,10 @@ class AiMergeService
         }
 
         // 4. For each changed file, get content from both branches and AI-merge
+        $modifiedFiles = collect($files)->where('status', 'modified');
+        $totalFiles = $modifiedFiles->count();
         $resolved = 0;
+        $current = 0;
         foreach ($files as $file) {
             $path = $file['filename'];
             $status = $file['status']; // added, removed, modified, renamed
@@ -89,6 +97,9 @@ class AiMergeService
             if ($status !== 'modified') {
                 continue;
             }
+
+            $current++;
+            $progress("Resolving file {$current}/{$totalFiles}: {$path}");
 
             try {
                 $baseContent = $this->github->getFileContentRaw($owner, $repo, $path, $baseBranch);
@@ -126,6 +137,7 @@ class AiMergeService
                 $resolved++;
 
                 Log::info('AI Merge: File resolved', ['path' => $path, 'pr' => $prNumber]);
+                $progress("Resolved {$resolved}/{$totalFiles}: {$path} ✅");
 
                 // Small delay to avoid rate limits
                 usleep(500000);
@@ -144,6 +156,7 @@ class AiMergeService
 
         // 5. Merge base branch into head to create a proper merge commit
         //    This resolves Git's divergence detection and makes the PR mergeable
+        $progress("Resolved {$resolved} files. Merging {$baseBranch} into {$headBranch}...");
         try {
             $this->github->mergeBranches(
                 $owner,
@@ -174,6 +187,7 @@ class AiMergeService
         // 7. Retry merge (with retry for 'already in progress')
         $maxRetries = 3;
         for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
+            $progress("Final merge: attempt {$attempt}/{$maxRetries}...");
             try {
                 $this->github->mergePullRequest(
                     $owner,
