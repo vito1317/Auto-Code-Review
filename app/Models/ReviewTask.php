@@ -14,6 +14,9 @@ class ReviewTask extends Model
         'pr_title',
         'pr_url',
         'pr_author',
+        'pr_status',
+        'ai_merge_status',
+        'ai_merge_message',
         'status',
         'jules_session_id',
         'jules_fix_pr_url',
@@ -33,12 +36,44 @@ class ReviewTask extends Model
      * Possible statuses for a review task.
      */
     const STATUS_PENDING = 'pending';
+
     const STATUS_REVIEWING = 'reviewing';
+
     const STATUS_COMMENTED = 'commented';
+
     const STATUS_FIXING = 'fixing';
+
     const STATUS_FIXED = 'fixed';
+
     const STATUS_APPROVED = 'approved';
+
     const STATUS_FAILED = 'failed';
+
+    const PR_STATUS_OPEN = 'open';
+
+    const PR_STATUS_CLOSED = 'closed';
+
+    const PR_STATUS_MERGED = 'merged';
+
+    const AI_MERGE_PENDING = 'pending';
+
+    const AI_MERGE_PROCESSING = 'processing';
+
+    const AI_MERGE_RESOLVED = 'resolved';
+
+    const AI_MERGE_FAILED = 'failed';
+
+    /**
+     * Scope: only the latest iteration of each PR per repository.
+     */
+    public function scopeLatestIteration($query)
+    {
+        return $query->whereIn('id', function ($sub) {
+            $sub->selectRaw('MAX(id)')
+                ->from('review_tasks')
+                ->groupBy('repository_id', 'pr_number');
+        });
+    }
 
     public function repository(): BelongsTo
     {

@@ -22,7 +22,9 @@ class PollJulesSessionJob implements ShouldQueue
 
     public function __construct(
         public ReviewTask $task,
-    ) {}
+    ) {
+        $this->onQueue('reviews');
+    }
 
     public function handle(JulesApiService $jules, GitHubApiService $github): void
     {
@@ -34,6 +36,11 @@ class PollJulesSessionJob implements ShouldQueue
             return;
         }
 
+        // Set per-user context for API services
+        $userId = $task->repository->user_id;
+        $github->forUser($userId);
+        $jules->forUser($userId);
+
         Log::info('Polling Jules session', [
             'task' => $task->id,
             'session' => $task->jules_session_id,
@@ -43,8 +50,51 @@ class PollJulesSessionJob implements ShouldQueue
             $result = $jules->getSessionOutputs($task->jules_session_id);
 
             if ($result['completed']) {
-                // Session completed — extract PR URL
                 $session = $result['session'];
+                $sessionState = $result['state'] ?? '';
+
+                // If Jules is waiting for user to publish PR, auto-submit it
+                if ($sessionState === 'AWAITING_USER_FEEDBACK') {
+                    Log::info('Jules session awaiting feedback, auto-submitting PR', ['task' => $task->id]);
+
+                    try {
+                        $jules->submitPullRequest($task->jules_session_id);
+                        Log::info('Jules PR auto-submitted, re-dispatching poll', ['task' => $task->id]);
+                    } catch (\Throwable $e) {
+                        Log::warning('Jules submitPullRequest failed, trying sendMessage', [
+                            'task' => $task->id,
+                            'error' => $e->getMessage(),
+                        ]);
+
+                        // Fallback: try sendMessage to accept
+                        try {
+                            $jules->sendMessage($task->jules_session_id, 'Please publish the pull request.');
+                        } catch (\Throwable $e2) {
+                            Log::warning('Jules sendMessage fallback also failed', [
+                                'task' => $task->id,
+                                'error' => $e2->getMessage(),
+                            ]);
+                        }
+                    }
+
+                    // Re-dispatch to check again in 30 seconds
+                    self::dispatch($this->task)->delay(now()->addSeconds(30));
+
+                    return;
+                }
+
+                // If Jules session FAILED, mark the task as failed
+                if ($sessionState === 'FAILED') {
+                    Log::warning('Jules session failed', ['task' => $task->id]);
+                    $task->update([
+                        'status' => ReviewTask::STATUS_FAILED,
+                        'error_message' => 'Jules session failed to complete.',
+                    ]);
+
+                    return;
+                }
+
+                // Session completed — extract PR URL
                 $prUrl = $jules->extractPrUrl($session);
                 $repo = $task->repository;
 
@@ -69,8 +119,56 @@ class PollJulesSessionJob implements ShouldQueue
                         $repo->owner,
                         $repo->repo,
                         $task->pr_number,
-                        "## 🔧 Auto-Fix PR Created\n\nJules has created a fix PR: {$prUrl}\n\nThis PR addresses the critical/warning issues found during the automated review.",
+                        "## 🔧 Auto-Fix PR Created\n\nJules has created a fix PR: {$prUrl}\n\nThis PR addresses the critical/warning issues found during the automated review.\n\n**This PR will be closed automatically.** Please review the fix PR instead.",
                     );
+
+                    // Close the original PR since it's been superseded by the fix PR
+                    try {
+                        $github->closePullRequest(
+                            $repo->owner,
+                            $repo->repo,
+                            $task->pr_number,
+                        );
+
+                        Log::info('Original PR closed after Jules fix PR created', [
+                            'task' => $task->id,
+                            'original_pr' => $task->pr_number,
+                            'fix_pr' => $prUrl,
+                        ]);
+                        $task->update(['pr_status' => ReviewTask::PR_STATUS_CLOSED]);
+                    } catch (\Throwable $e) {
+                        Log::warning('Failed to close original PR after Jules fix', [
+                            'task' => $task->id,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                }
+
+                // Auto-merge the fix PR if enabled for this repository
+                if ($repo->auto_merge && $prUrl) {
+                    // Extract the fix PR number from the URL
+                    if (preg_match('/\/pull\/(\d+)/', $prUrl, $matches)) {
+                        $fixPrNumber = (int) $matches[1];
+                        try {
+                            $github->mergePullRequest(
+                                $repo->owner,
+                                $repo->repo,
+                                $fixPrNumber,
+                                "Auto-merge fix PR #{$fixPrNumber} for #{$task->pr_number}: {$task->pr_title}",
+                            );
+
+                            Log::info('Fix PR auto-merged', [
+                                'task' => $task->id,
+                                'fix_pr' => $fixPrNumber,
+                            ]);
+                        } catch (\Throwable $e) {
+                            Log::warning('Auto-merge failed for fix PR', [
+                                'task' => $task->id,
+                                'fix_pr' => $fixPrNumber,
+                                'error' => $e->getMessage(),
+                            ]);
+                        }
+                    }
                 }
 
                 return;

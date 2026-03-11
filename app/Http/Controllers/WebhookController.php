@@ -57,8 +57,8 @@ class WebhookController extends Controller
             return response('Repository not configured', 200);
         }
 
-        // Verify webhook signature using global webhook secret
-        $webhookSecret = \App\Models\Setting::getValue('github_webhook_secret', '');
+        // Verify webhook signature using the repo owner's webhook secret
+        $webhookSecret = \App\Models\Setting::getValue('github_webhook_secret', '', $repository->user_id);
         if ($webhookSecret) {
             $signature = $request->header('X-Hub-Signature-256', '');
             if (! $github->verifyWebhookSignature($payload, $signature, $webhookSecret)) {
@@ -79,13 +79,80 @@ class WebhookController extends Controller
             ->latest()
             ->first();
 
-        // For synchronize events, increment iteration
-        $iteration = 1;
-        if ($action === 'synchronize' && $existingTask) {
-            $iteration = $existingTask->iteration + 1;
+        // Skip synchronize events caused by AI merge commits or when ANY task for this PR is actively processing
+        if ($action === 'synchronize') {
+            // Skip if PR is already merged or closed
+            $prState = $prData['state'] ?? 'open';
+            $prMerged = $prData['merged'] ?? false;
+            if ($prMerged || $prState === 'closed') {
+                Log::info('Skipping synchronize: PR already merged/closed', ['pr' => $prNumber]);
+
+                return response('PR merged/closed, skipping', 200);
+            }
+
+            // Skip if existing task already marked as merged
+            if ($existingTask && $existingTask->pr_status === ReviewTask::PR_STATUS_MERGED) {
+                Log::info('Skipping synchronize: task already merged', ['pr' => $prNumber]);
+
+                return response('Already merged, skipping', 200);
+            }
+
+            // Skip if ANY task for this PR has AI merge in progress
+            $hasActiveAiMerge = ReviewTask::where('repository_id', $repository->id)
+                ->where('pr_number', $prNumber)
+                ->whereIn('ai_merge_status', ['pending', 'processing'])
+                ->exists();
+
+            if ($hasActiveAiMerge) {
+                Log::info('Skipping synchronize: AI merge in progress for PR', ['pr' => $prNumber]);
+
+                return response('AI merge in progress, skipping', 200);
+            }
+
+            // Skip if ANY task for this PR is currently being reviewed or fixed
+            $hasActiveProcessing = ReviewTask::where('repository_id', $repository->id)
+                ->where('pr_number', $prNumber)
+                ->whereIn('status', [ReviewTask::STATUS_REVIEWING, ReviewTask::STATUS_FIXING])
+                ->exists();
+
+            if ($hasActiveProcessing) {
+                Log::info('Skipping synchronize: task actively processing', ['pr' => $prNumber]);
+
+                return response('Task processing, skipping', 200);
+            }
+
+            // Skip commits made by the bot (AI merge commits)
+            $lastCommitMsg = $data['head_commit']['message'] ?? ($data['after'] ?? '');
+            if (str_contains($lastCommitMsg, 'AI merge:') || str_contains($lastCommitMsg, 'AI-assisted merge')) {
+                Log::info('Skipping synchronize: AI merge commit detected', ['pr' => $prNumber]);
+
+                return response('AI commit, skipping', 200);
+            }
         }
 
-        // Create or update review task
+        // For synchronize events, update the existing task instead of creating a new one
+        if ($action === 'synchronize' && $existingTask) {
+            $existingTask->update([
+                'iteration' => $existingTask->iteration + 1,
+                'status' => ReviewTask::STATUS_PENDING,
+                'pr_title' => $prTitle,
+                'error_message' => null,
+                'ai_merge_status' => null,
+                'ai_merge_message' => null,
+            ]);
+
+            Log::info('Review task updated for new push', [
+                'task_id' => $existingTask->id,
+                'pr' => "{$owner}/{$repo}#{$prNumber}",
+                'iteration' => $existingTask->iteration,
+            ]);
+
+            ReviewPrJob::dispatch($existingTask);
+
+            return response()->json(['status' => 'updated', 'task_id' => $existingTask->id]);
+        }
+
+        // Create review task (for 'opened' or new PRs)
         $task = ReviewTask::create([
             'repository_id' => $repository->id,
             'pr_number' => $prNumber,
@@ -93,7 +160,7 @@ class WebhookController extends Controller
             'pr_url' => $prUrl,
             'pr_author' => $prAuthor,
             'status' => ReviewTask::STATUS_PENDING,
-            'iteration' => $iteration,
+            'iteration' => 1,
         ]);
 
         Log::info('Review task created', [

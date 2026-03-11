@@ -11,23 +11,23 @@ class CodeReviewService
     /**
      * Get the configured AI provider: 'gemini' or 'lmstudio'.
      */
-    private function getProvider(): string
+    private function getProvider(?int $userId = null): string
     {
-        return Setting::getValue('ai_provider', 'gemini');
+        return Setting::getValue('ai_provider', 'gemini', $userId);
     }
 
     /**
      * Review a PR diff using the configured AI provider.
      */
-    public function reviewDiff(string $diff, array $config = []): array
+    public function reviewDiff(string $diff, array $config = [], ?int $userId = null): array
     {
-        $provider = $this->getProvider();
+        $provider = $this->getProvider($userId);
 
         Log::info("Running code review via {$provider}");
 
         return match ($provider) {
-            'lmstudio' => $this->reviewViaLmStudio($diff, $config),
-            default => $this->reviewViaGemini($diff, $config),
+            'lmstudio' => $this->reviewViaLmStudio($diff, $config, $userId),
+            default => $this->reviewViaGemini($diff, $config, $userId),
         };
     }
 
@@ -35,10 +35,10 @@ class CodeReviewService
     //  Gemini Provider
     // ──────────────────────────────────────────────────
 
-    private function reviewViaGemini(string $diff, array $config = []): array
+    private function reviewViaGemini(string $diff, array $config = [], ?int $userId = null): array
     {
-        $apiKey = Setting::getValue('gemini_api_key', config('services.gemini.api_key', ''));
-        $model = Setting::getValue('gemini_model', 'gemini-2.0-flash');
+        $apiKey = Setting::getValue('gemini_api_key', config('services.gemini.api_key', ''), $userId);
+        $model = Setting::getValue('gemini_model', 'gemini-2.0-flash', $userId);
         $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}";
 
         $prompt = $this->buildFullPrompt($diff, $config);
@@ -67,10 +67,10 @@ class CodeReviewService
     //  LM Studio Provider (OpenAI-compatible API)
     // ──────────────────────────────────────────────────
 
-    private function reviewViaLmStudio(string $diff, array $config = []): array
+    private function reviewViaLmStudio(string $diff, array $config = [], ?int $userId = null): array
     {
-        $baseUrl = Setting::getValue('lmstudio_base_url', 'http://localhost:1234');
-        $model = Setting::getValue('lmstudio_model', 'default');
+        $baseUrl = Setting::getValue('lmstudio_base_url', 'http://localhost:1234', $userId);
+        $model = Setting::getValue('lmstudio_model', 'default', $userId);
 
         $baseUrl = rtrim($baseUrl, '/');
         $url = "{$baseUrl}/v1/chat/completions";
@@ -82,7 +82,7 @@ class CodeReviewService
             'model' => $model,
             'messages' => [
                 ['role' => 'system', 'content' => $systemPrompt],
-                ['role' => 'user', 'content' => $userPrompt . "\n\nIMPORTANT: You MUST respond with ONLY a valid JSON object. No markdown, no explanation, no code fences. Just the raw JSON."],
+                ['role' => 'user', 'content' => $userPrompt."\n\nIMPORTANT: You MUST respond with ONLY a valid JSON object. No markdown, no explanation, no code fences. Just the raw JSON."],
             ],
             'temperature' => 0.3,
             'max_tokens' => 4096,
@@ -114,7 +114,7 @@ class CodeReviewService
 
     private function buildFullPrompt(string $diff, array $config = []): string
     {
-        return $this->buildSystemPrompt($config) . "\n\n" . $this->buildReviewPrompt($diff);
+        return $this->buildSystemPrompt($config)."\n\n".$this->buildReviewPrompt($diff);
     }
 
     private function buildSystemPrompt(array $config = []): string
@@ -166,7 +166,7 @@ PROMPT;
         // Truncate very large diffs
         $maxLen = 100000;
         if (strlen($diff) > $maxLen) {
-            $diff = substr($diff, 0, $maxLen) . "\n\n... [DIFF TRUNCATED] ...";
+            $diff = substr($diff, 0, $maxLen)."\n\n... [DIFF TRUNCATED] ...";
         }
 
         return "Please review the following pull request diff:\n\n```diff\n{$diff}\n```";
@@ -195,19 +195,55 @@ PROMPT;
             }
         }
 
-        try {
-            $parsed = json_decode($text, true, 512, JSON_THROW_ON_ERROR);
-
+        // Attempt 1: direct JSON parse
+        $parsed = json_decode($text, true, 512);
+        if (json_last_error() === JSON_ERROR_NONE && is_array($parsed)) {
             return [
                 'summary' => $parsed['summary'] ?? '',
-                'overall_quality' => $parsed['overall_quality'] ?? 'acceptable',
+                'overall_quality' => strtolower($parsed['overall_quality'] ?? 'acceptable'),
                 'findings' => $parsed['findings'] ?? [],
             ];
-        } catch (\JsonException $e) {
-            Log::warning('Failed to parse AI review response', ['text' => substr($text, 0, 500), 'error' => $e->getMessage()]);
-
-            return ['summary' => '', 'overall_quality' => 'unknown', 'findings' => []];
         }
+
+        // Attempt 2: extract top-level fields via regex (handles embedded code in strings)
+        Log::info('JSON direct parse failed, trying regex extraction', ['error' => json_last_error_msg()]);
+
+        $summary = '';
+        $quality = 'acceptable';
+        $findings = [];
+
+        if (preg_match('/"summary"\s*:\s*"((?:[^"\\\\]|\\\\.)*)"/s', $text, $m)) {
+            $summary = stripslashes($m[1]);
+        }
+        if (preg_match('/"overall_quality"\s*:\s*"((?:[^"\\\\]|\\\\.)*)"/s', $text, $m)) {
+            $quality = strtolower($m[1]);
+        }
+
+        // Try to extract the findings array by finding balanced brackets
+        if (preg_match('/"findings"\s*:\s*(\[.*\])\s*\}?\s*$/s', $text, $m)) {
+            $findingsJson = $m[1];
+            $decodedFindings = json_decode($findingsJson, true, 512);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decodedFindings)) {
+                $findings = $decodedFindings;
+            }
+        }
+
+        if ($summary || $quality !== 'acceptable' || ! empty($findings)) {
+            Log::info('Regex extraction recovered review data', [
+                'quality' => $quality,
+                'findings_count' => count($findings),
+            ]);
+
+            return [
+                'summary' => $summary,
+                'overall_quality' => $quality,
+                'findings' => $findings,
+            ];
+        }
+
+        Log::warning('Failed to parse AI review response', ['text' => substr($text, 0, 500)]);
+
+        return ['summary' => '', 'overall_quality' => 'unknown', 'findings' => []];
     }
 
     private function getResponseSchema(): array
@@ -249,7 +285,7 @@ PROMPT;
             };
 
             $body = "{$icon} **{$finding['title']}** [{$finding['severity']}]\n\n{$finding['body']}\n\n";
-            if (!empty($finding['suggestion'])) {
+            if (! empty($finding['suggestion'])) {
                 $body .= "**Suggested fix:**\n{$finding['suggestion']}";
             }
 
@@ -271,14 +307,17 @@ PROMPT;
         $issueList = '';
         $i = 1;
         foreach ($findings as $f) {
-            if (!in_array($f['severity'] ?? '', ['critical', 'warning']))
+            if (! in_array($f['severity'] ?? '', ['critical', 'warning'])) {
                 continue;
+            }
             $issueList .= "\n{$i}. [{$f['severity']}] {$f['file_path']}";
-            if (!empty($f['line_number']))
+            if (! empty($f['line_number'])) {
                 $issueList .= " (line {$f['line_number']})";
+            }
             $issueList .= ": {$f['title']}\n   Problem: {$f['body']}\n";
-            if (!empty($f['suggestion']))
+            if (! empty($f['suggestion'])) {
                 $issueList .= "   Fix: {$f['suggestion']}\n";
+            }
             $i++;
         }
 
@@ -296,6 +335,7 @@ PROMPT;
             $counts[$s] = ($counts[$s] ?? 0) + 1;
         }
 
+        $overallQuality = strtolower($overallQuality);
         $emoji = match ($overallQuality) {
             'good' => '✅', 'acceptable' => '🟡', 'needs-improvement' => '🟠', 'poor' => '🔴', default => '🔵',
         };
@@ -317,6 +357,7 @@ PROMPT;
         }
 
         $s .= "\n---\n*Powered by Jules + {$provider} Code Review Bot*";
+
         return $s;
     }
 
@@ -329,10 +370,12 @@ PROMPT;
 
         foreach ($findings as $f) {
             $sev = $f['severity'] ?? 'info';
-            if ($threshold === 'critical' && $sev === 'critical')
+            if ($threshold === 'critical' && $sev === 'critical') {
                 return true;
-            if ($threshold === 'warning' && in_array($sev, ['critical', 'warning']))
+            }
+            if ($threshold === 'warning' && in_array($sev, ['critical', 'warning'])) {
                 return true;
+            }
         }
 
         return false;

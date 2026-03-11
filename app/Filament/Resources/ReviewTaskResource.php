@@ -11,6 +11,7 @@ use Filament\Infolists\Infolist;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 class ReviewTaskResource extends Resource
 {
@@ -135,7 +136,7 @@ class ReviewTaskResource extends Resource
                 ->visible(fn ($record) => $record->error_message),
 
             Infolists\Components\Section::make('Review Findings')
-                ->description(fn ($record) => $record->comments->count() . ' issue(s) found')
+                ->description(fn ($record) => $record->comments->count().' issue(s) found')
                 ->schema([
                     Infolists\Components\RepeatableEntry::make('comments')
                         ->label('')
@@ -150,7 +151,10 @@ class ReviewTaskResource extends Resource
                                 }),
                             Infolists\Components\TextEntry::make('file_path')
                                 ->label('File')
-                                ->icon('heroicon-o-document-text'),
+                                ->icon('heroicon-o-document-text')
+                                ->formatStateUsing(fn (string $state) => basename($state))
+                                ->tooltip(fn (string $state) => $state)
+                                ->columnSpan(2),
                             Infolists\Components\TextEntry::make('line_number')
                                 ->label('Line')
                                 ->placeholder('—'),
@@ -162,7 +166,7 @@ class ReviewTaskResource extends Resource
                                 ->markdown()
                                 ->columnSpanFull(),
                         ])
-                        ->columns(4),
+                        ->columns(5),
                 ])
                 ->visible(fn ($record) => $record->comments->count() > 0)
                 ->collapsible(),
@@ -171,7 +175,7 @@ class ReviewTaskResource extends Resource
                 ->schema([
                     Infolists\Components\TextEntry::make('diff_content')
                         ->label('')
-                        ->formatStateUsing(fn (?string $state) => $state ? '```diff' . "\n" . $state . "\n" . '```' : 'No diff available')
+                        ->formatStateUsing(fn (?string $state) => $state ? '```diff'."\n".$state."\n".'```' : 'No diff available')
                         ->markdown()
                         ->columnSpanFull(),
                 ])
@@ -195,6 +199,14 @@ class ReviewTaskResource extends Resource
     public static function table(Table $table): Table
     {
         return $table
+            ->modifyQueryUsing(function (Builder $query) {
+                // Only show the latest iteration of each PR
+                $query->latestIteration();
+
+                if (! auth()->user()->isAdmin()) {
+                    $query->whereHas('repository', fn (Builder $q) => $q->where('user_id', auth()->id()));
+                }
+            })
             ->defaultSort('created_at', 'desc')
             ->columns([
                 Tables\Columns\TextColumn::make('repository.name')
@@ -232,6 +244,41 @@ class ReviewTaskResource extends Resource
                         default => 'gray',
                     }),
 
+                Tables\Columns\TextColumn::make('pr_status')
+                    ->label('PR')
+                    ->badge()
+                    ->formatStateUsing(fn (string $state) => match ($state) {
+                        'open' => '🟢 Open',
+                        'closed' => '🔴 Closed',
+                        'merged' => '🟣 Merged',
+                        default => $state,
+                    })
+                    ->color(fn (string $state) => match ($state) {
+                        'open' => 'success',
+                        'closed' => 'danger',
+                        'merged' => 'info',
+                        default => 'gray',
+                    }),
+
+                Tables\Columns\TextColumn::make('ai_merge_status')
+                    ->label('AI Merge')
+                    ->badge()
+                    ->formatStateUsing(fn (?string $state) => match ($state) {
+                        'pending' => '⏳ Pending',
+                        'processing' => '🔄 Processing',
+                        'resolved' => '✅ Resolved',
+                        'failed' => '❌ Failed',
+                        default => '—',
+                    })
+                    ->color(fn (?string $state) => match ($state) {
+                        'pending' => 'warning',
+                        'processing' => 'info',
+                        'resolved' => 'success',
+                        'failed' => 'danger',
+                        default => 'gray',
+                    })
+                    ->tooltip(fn (ReviewTask $record) => $record->ai_merge_message),
+
                 Tables\Columns\TextColumn::make('iteration')
                     ->label('Iter.')
                     ->alignCenter(),
@@ -264,6 +311,13 @@ class ReviewTaskResource extends Resource
                         'approved' => 'Approved',
                         'failed' => 'Failed',
                     ]),
+                Tables\Filters\SelectFilter::make('pr_status')
+                    ->label('PR Status')
+                    ->options([
+                        'open' => 'Open',
+                        'closed' => 'Closed',
+                        'merged' => 'Merged',
+                    ]),
                 Tables\Filters\SelectFilter::make('repository')
                     ->relationship('repository', 'name'),
             ])
@@ -283,13 +337,143 @@ class ReviewTaskResource extends Resource
                         ]);
                         \App\Jobs\ReviewPrJob::dispatch($record);
                     }),
+                Tables\Actions\Action::make('merge')
+                    ->label('Merge PR')
+                    ->icon('heroicon-o-check-circle')
+                    ->color('success')
+                    ->requiresConfirmation()
+                    ->modalHeading('Merge Pull Request')
+                    ->modalDescription(fn (ReviewTask $record) => "Merge PR #{$record->pr_number}: {$record->pr_title}?")
+                    ->visible(fn (ReviewTask $record) => $record->pr_status === 'open' && in_array($record->status, ['approved', 'fixed', 'commented']))
+                    ->action(function (ReviewTask $record) {
+                        $github = app(\App\Services\GitHubApiService::class)->forUser(auth()->id());
+                        $repo = $record->repository;
+                        try {
+                            $github->mergePullRequest(
+                                $repo->owner,
+                                $repo->repo,
+                                $record->pr_number,
+                                "Merge PR #{$record->pr_number}: {$record->pr_title}",
+                            );
+                            $record->update(['pr_status' => ReviewTask::PR_STATUS_MERGED]);
+                            \Filament\Notifications\Notification::make()
+                                ->title("PR #{$record->pr_number} merged successfully")
+                                ->success()
+                                ->send();
+                        } catch (\Throwable $e) {
+                            $msg = $e->getMessage();
+                            \Filament\Notifications\Notification::make()
+                                ->title('Merge failed')
+                                ->body(str_contains($msg, 'not mergeable') ? 'PR has merge conflicts' : \Illuminate\Support\Str::limit($msg, 100))
+                                ->danger()
+                                ->send();
+                        }
+                    }),
+                Tables\Actions\Action::make('ai_merge')
+                    ->label('AI Merge')
+                    ->icon('heroicon-o-sparkles')
+                    ->color('info')
+                    ->requiresConfirmation()
+                    ->modalHeading('AI Merge Pull Request')
+                    ->modalDescription(fn (ReviewTask $record) => "Use AI to resolve merge conflicts and merge PR #{$record->pr_number}. This runs in the background.")
+                    ->visible(fn (ReviewTask $record) => $record->pr_status === 'open' && in_array($record->status, ['approved', 'fixed', 'commented']))
+                    ->action(function (ReviewTask $record) {
+                        $record->update(['ai_merge_status' => ReviewTask::AI_MERGE_PENDING, 'ai_merge_message' => 'Queued for AI merge']);
+                        \App\Jobs\AiMergeJob::dispatch($record, auth()->id());
+                        \Filament\Notifications\Notification::make()
+                            ->title("AI Merge started for PR #{$record->pr_number}")
+                            ->body('Running in background. Refresh to see results.')
+                            ->success()
+                            ->send();
+                    }),
                 Tables\Actions\Action::make('view_github')
                     ->label('View PR')
                     ->icon('heroicon-o-arrow-top-right-on-square')
                     ->url(fn (ReviewTask $record) => $record->pr_url)
                     ->openUrlInNewTab(),
             ])
-            ->bulkActions([]);
+            ->bulkActions([
+                Tables\Actions\BulkAction::make('retry_selected')
+                    ->label('Retry Selected')
+                    ->icon('heroicon-o-arrow-path')
+                    ->color('warning')
+                    ->requiresConfirmation()
+                    ->deselectRecordsAfterCompletion()
+                    ->action(function (\Illuminate\Database\Eloquent\Collection $records) {
+                        $count = 0;
+                        foreach ($records as $record) {
+                            if (! in_array($record->status, ['failed', 'commented'])) {
+                                continue;
+                            }
+                            $record->update([
+                                'status' => ReviewTask::STATUS_PENDING,
+                                'error_message' => null,
+                                'iteration' => $record->iteration + 1,
+                            ]);
+                            \App\Jobs\ReviewPrJob::dispatch($record);
+                            $count++;
+                        }
+
+                        \Filament\Notifications\Notification::make()
+                            ->title("Retrying {$count} tasks")
+                            ->success()
+                            ->send();
+                    }),
+                Tables\Actions\BulkAction::make('merge_selected')
+                    ->label('Merge Selected')
+                    ->icon('heroicon-o-check-circle')
+                    ->color('success')
+                    ->requiresConfirmation()
+                    ->deselectRecordsAfterCompletion()
+                    ->action(function (\Illuminate\Database\Eloquent\Collection $records) {
+                        $github = app(\App\Services\GitHubApiService::class)->forUser(auth()->id());
+                        $merged = 0;
+                        $failed = 0;
+                        foreach ($records as $record) {
+                            $repo = $record->repository;
+                            try {
+                                $github->mergePullRequest(
+                                    $repo->owner,
+                                    $repo->repo,
+                                    $record->pr_number,
+                                    "Merge PR #{$record->pr_number}: {$record->pr_title}",
+                                );
+                                $record->update(['pr_status' => ReviewTask::PR_STATUS_MERGED]);
+                                $merged++;
+                            } catch (\Throwable) {
+                                $failed++;
+                            }
+                        }
+
+                        \Filament\Notifications\Notification::make()
+                            ->title("Merged {$merged} PRs".($failed ? ", {$failed} failed" : ''))
+                            ->color($failed ? 'warning' : 'success')
+                            ->send();
+                    }),
+                Tables\Actions\BulkAction::make('ai_merge_selected')
+                    ->label('AI Merge Selected')
+                    ->icon('heroicon-o-sparkles')
+                    ->color('info')
+                    ->requiresConfirmation()
+                    ->deselectRecordsAfterCompletion()
+                    ->action(function (\Illuminate\Database\Eloquent\Collection $records) {
+                        $userId = auth()->id();
+                        $count = 0;
+                        foreach ($records as $record) {
+                            if ($record->pr_status === 'open') {
+                                $record->update(['ai_merge_status' => ReviewTask::AI_MERGE_PENDING, 'ai_merge_message' => 'Queued for AI merge']);
+                                \App\Jobs\AiMergeJob::dispatch($record, $userId);
+                                $count++;
+                            }
+                        }
+
+                        \Filament\Notifications\Notification::make()
+                            ->title("AI Merge dispatched for {$count} PRs")
+                            ->body('Processing in background. Refresh to see results.')
+                            ->success()
+                            ->send();
+                    }),
+            ]);
     }
 
     public static function getPages(): array

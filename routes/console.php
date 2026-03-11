@@ -10,3 +10,9 @@ Artisan::command('inspire', function () {
 
 // Poll Jules sessions every 5 minutes
 Schedule::command('jules:poll-sessions')->everyFiveMinutes();
+
+// Poll for new open PRs every 10 minutes (safety net for missed webhooks)
+Schedule::command('review:poll')->everyTenMinutes();
+
+// Retry auto-merge for approved tasks every 10 minutes
+Schedule::command('review:auto-merge')->everyTenMinutes();

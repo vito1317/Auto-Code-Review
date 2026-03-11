@@ -10,18 +10,32 @@ class GitHubApiService
 {
     private const BASE_URL = 'https://api.github.com';
 
-    private ?string $token = null;
+    private ?int $userId = null;
+
+    private array $tokenCache = [];
 
     /**
-     * Get the GitHub token from settings.
+     * Set the user context for per-user token resolution.
+     */
+    public function forUser(?int $userId): static
+    {
+        $this->userId = $userId;
+
+        return $this;
+    }
+
+    /**
+     * Get the GitHub token from settings (per-user with global fallback).
      */
     private function getToken(): string
     {
-        if ($this->token === null) {
-            $this->token = Setting::getValue('github_token', config('services.github.token', ''));
+        $key = $this->userId ?? 0;
+
+        if (! isset($this->tokenCache[$key])) {
+            $this->tokenCache[$key] = Setting::getValue('github_token', config('services.github.token', ''), $this->userId);
         }
 
-        return $this->token;
+        return $this->tokenCache[$key];
     }
 
     /**
@@ -37,8 +51,14 @@ class GitHubApiService
             'X-GitHub-Api-Version' => '2022-11-28',
         ];
 
-        $response = Http::withHeaders(array_merge($defaultHeaders, $headers))
-            ->{$method}($url, $data);
+        $client = Http::withHeaders(array_merge($defaultHeaders, $headers));
+
+        // Non-GET requests must send JSON body for GitHub API
+        if ($method !== 'get') {
+            $client = $client->asJson();
+        }
+
+        $response = $client->{$method}($url, $data);
 
         if ($response->failed()) {
             Log::error('GitHub API request failed', [
@@ -204,6 +224,116 @@ class GitHubApiService
     {
         return $this->request('get', "/repos/{$owner}/{$repo}/pulls", [
             'state' => $state,
+        ]);
+    }
+
+    /**
+     * Merge a pull request.
+     *
+     * @param  string  $mergeMethod  merge, squash, or rebase
+     */
+    public function mergePullRequest(
+        string $owner,
+        string $repo,
+        int $prNumber,
+        string $commitMessage = '',
+        string $mergeMethod = 'squash',
+    ): array {
+        $payload = [
+            'merge_method' => $mergeMethod,
+        ];
+
+        if ($commitMessage) {
+            $payload['commit_message'] = $commitMessage;
+        }
+
+        return $this->request('put', "/repos/{$owner}/{$repo}/pulls/{$prNumber}/merge", $payload);
+    }
+
+    /**
+     * Get the content of a file from a specific branch/ref.
+     */
+    public function getFileContent(string $owner, string $repo, string $path, string $ref): array
+    {
+        return $this->request('get', "/repos/{$owner}/{$repo}/contents/{$path}", [
+            'ref' => $ref,
+        ]);
+    }
+
+    /**
+     * Get raw file content decoded from base64.
+     */
+    public function getFileContentRaw(string $owner, string $repo, string $path, string $ref): string
+    {
+        $file = $this->getFileContent($owner, $repo, $path, $ref);
+
+        return base64_decode($file['content'] ?? '');
+    }
+
+    /**
+     * Update (or create) a file in the repository.
+     */
+    public function updateFileContent(
+        string $owner,
+        string $repo,
+        string $path,
+        string $content,
+        string $message,
+        string $branch,
+        string $sha,
+    ): array {
+        return $this->request('put', "/repos/{$owner}/{$repo}/contents/{$path}", [
+            'message' => $message,
+            'content' => base64_encode($content),
+            'sha' => $sha,
+            'branch' => $branch,
+        ]);
+    }
+
+    /**
+     * Compare two branches/refs.
+     */
+    public function compareBranches(string $owner, string $repo, string $base, string $head): array
+    {
+        return $this->request('get', "/repos/{$owner}/{$repo}/compare/{$base}...{$head}");
+    }
+
+    /**
+     * Update a PR branch with the latest from the base branch.
+     */
+    public function updatePullRequestBranch(string $owner, string $repo, int $prNumber): array
+    {
+        return $this->request('put', "/repos/{$owner}/{$repo}/pulls/{$prNumber}/update-branch");
+    }
+
+    /**
+     * Close a pull request.
+     */
+    public function closePullRequest(
+        string $owner,
+        string $repo,
+        int $prNumber,
+    ): array {
+        return $this->request('patch', "/repos/{$owner}/{$repo}/pulls/{$prNumber}", [
+            'state' => 'closed',
+        ]);
+    }
+
+    /**
+     * Merge one branch into another using GitHub's merge API.
+     * This creates a proper merge commit, resolving branch divergence.
+     */
+    public function mergeBranches(
+        string $owner,
+        string $repo,
+        string $base,
+        string $head,
+        string $commitMessage = 'Merge branch',
+    ): array {
+        return $this->request('post', "/repos/{$owner}/{$repo}/merges", [
+            'base' => $base,
+            'head' => $head,
+            'commit_message' => $commitMessage,
         ]);
     }
 }

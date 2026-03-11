@@ -3,11 +3,13 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Repository extends Model
 {
     protected $fillable = [
+        'user_id',
         'name',
         'owner',
         'repo',
@@ -15,13 +17,22 @@ class Repository extends Model
         'default_branch',
         'webhook_secret',
         'is_active',
+        'auto_merge',
+        'auto_ai_merge',
         'review_config',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
+        'auto_merge' => 'boolean',
+        'auto_ai_merge' => 'boolean',
         'review_config' => 'array',
     ];
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
 
     public function reviewTasks(): HasMany
     {
@@ -29,13 +40,12 @@ class Repository extends Model
     }
 
     /**
-     * Get review tasks that resulted in auto-fix PRs.
+     * Get review tasks that triggered Jules auto-fix.
      */
     public function fixedTasks(): HasMany
     {
         return $this->hasMany(ReviewTask::class)
-            ->where('status', 'fixed')
-            ->whereNotNull('jules_fix_pr_url');
+            ->whereNotNull('jules_session_id');
     }
 
     /**

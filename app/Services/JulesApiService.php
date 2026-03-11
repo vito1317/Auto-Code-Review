@@ -10,18 +10,32 @@ class JulesApiService
 {
     private const BASE_URL = 'https://jules.googleapis.com/v1alpha';
 
-    private ?string $apiKey = null;
+    private ?int $userId = null;
+
+    private array $apiKeyCache = [];
 
     /**
-     * Get the API key from settings.
+     * Set the user context for per-user API key resolution.
+     */
+    public function forUser(?int $userId): static
+    {
+        $this->userId = $userId;
+
+        return $this;
+    }
+
+    /**
+     * Get the API key from settings (per-user with global fallback).
      */
     private function getApiKey(): string
     {
-        if ($this->apiKey === null) {
-            $this->apiKey = trim((string) Setting::getValue('jules_api_key', config('services.jules.api_key', '')));
+        $key = $this->userId ?? 0;
+
+        if (! isset($this->apiKeyCache[$key])) {
+            $this->apiKeyCache[$key] = trim((string) Setting::getValue('jules_api_key', config('services.jules.api_key', ''), $this->userId));
         }
 
-        return $this->apiKey;
+        return $this->apiKeyCache[$key];
     }
 
     /**
@@ -42,12 +56,12 @@ class JulesApiService
             // GET: send data as query params, no Content-Type needed
             $response = Http::withHeaders([
                 'X-Goog-Api-Key' => $apiKey,
-            ])->get($url, $data);
+            ])->timeout(120)->get($url, $data);
         } else {
             // POST/PUT: send data as JSON body
             $response = Http::withHeaders([
                 'X-Goog-Api-Key' => $apiKey,
-            ])->asJson()->post($url, $data);
+            ])->timeout(120)->asJson()->post($url, $data);
         }
 
         if ($response->failed()) {
@@ -165,6 +179,15 @@ class JulesApiService
     }
 
     /**
+     * Submit (publish) the pull request for a completed session.
+     * POST /v1alpha/sessions/{id}:submitPullRequest
+     */
+    public function submitPullRequest(string $sessionId): array
+    {
+        return $this->request('post', "/sessions/{$sessionId}:submitPullRequest");
+    }
+
+    /**
      * Send a message to a session (interact with Jules agent).
      * POST /v1alpha/sessions/{id}:sendMessage
      */
@@ -192,8 +215,19 @@ class JulesApiService
     public function getSessionOutputs(string $sessionId): ?array
     {
         $session = $this->getSession($sessionId);
+        $state = $session['state'] ?? '';
 
-        // Check activities for sessionCompleted
+        // Check session state directly (most reliable)
+        if (in_array($state, ['COMPLETED', 'FAILED', 'AWAITING_USER_FEEDBACK'])) {
+            return [
+                'completed' => true,
+                'session' => $session,
+                'state' => $state,
+                'artifacts' => [],
+            ];
+        }
+
+        // Fallback: check activities for sessionCompleted
         $activities = $this->listActivities($sessionId);
 
         foreach ($activities['activities'] ?? [] as $activity) {
@@ -201,6 +235,7 @@ class JulesApiService
                 return [
                     'completed' => true,
                     'session' => $session,
+                    'state' => $state,
                     'artifacts' => $activity['artifacts'] ?? [],
                 ];
             }
@@ -209,6 +244,7 @@ class JulesApiService
         return [
             'completed' => false,
             'session' => $session,
+            'state' => $state,
             'artifacts' => [],
         ];
     }

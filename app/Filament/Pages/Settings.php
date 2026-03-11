@@ -24,19 +24,26 @@ class Settings extends Page implements HasForms
 
     public ?array $data = [];
 
+    private function userId(): int
+    {
+        return auth()->id();
+    }
+
     public function mount(): void
     {
+        $userId = $this->userId();
+
         $this->form->fill([
-            'jules_api_key' => Setting::getValue('jules_api_key', ''),
-            'github_token' => Setting::getValue('github_token', ''),
-            'github_webhook_secret' => Setting::getValue('github_webhook_secret', ''),
-            'gemini_api_key' => Setting::getValue('gemini_api_key', ''),
-            'ai_provider' => Setting::getValue('ai_provider', 'gemini'),
-            'lmstudio_base_url' => Setting::getValue('lmstudio_base_url', 'http://localhost:1234'),
-            'lmstudio_model' => Setting::getValue('lmstudio_model', ''),
-            'gemini_model' => Setting::getValue('gemini_model', 'gemini-2.0-flash'),
-            'auto_fix_threshold' => Setting::getValue('auto_fix_threshold', 'warning'),
-            'auto_fix_enabled' => Setting::getValue('auto_fix_enabled', 'true') === 'true',
+            'jules_api_key' => Setting::getValue('jules_api_key', '', $userId),
+            'github_token' => Setting::getValue('github_token', '', $userId),
+            'github_webhook_secret' => Setting::getValue('github_webhook_secret', '', $userId),
+            'gemini_api_key' => Setting::getValue('gemini_api_key', '', $userId),
+            'ai_provider' => Setting::getValue('ai_provider', 'gemini', $userId),
+            'lmstudio_base_url' => Setting::getValue('lmstudio_base_url', 'http://localhost:1234', $userId),
+            'lmstudio_model' => Setting::getValue('lmstudio_model', '', $userId),
+            'gemini_model' => Setting::getValue('gemini_model', 'gemini-2.0-flash', $userId),
+            'auto_fix_threshold' => Setting::getValue('auto_fix_threshold', 'warning', $userId),
+            'auto_fix_enabled' => Setting::getValue('auto_fix_enabled', 'true', $userId) === 'true',
         ]);
     }
 
@@ -159,18 +166,18 @@ class Settings extends Page implements HasForms
     public function save(): void
     {
         $data = $this->form->getState();
+        $userId = $this->userId();
 
-        // Save each setting
-        Setting::setValue('jules_api_key', $data['jules_api_key'] ?? '', 'jules', 'Jules API Key');
-        Setting::setValue('github_token', $data['github_token'] ?? '', 'github', 'GitHub Personal Access Token');
-        Setting::setValue('github_webhook_secret', $data['github_webhook_secret'] ?? '', 'github', 'GitHub Webhook Secret');
-        Setting::setValue('gemini_api_key', $data['gemini_api_key'] ?? '', 'gemini', 'Gemini API Key');
-        Setting::setValue('ai_provider', $data['ai_provider'] ?? 'gemini', 'general', 'AI Provider');
-        Setting::setValue('lmstudio_base_url', $data['lmstudio_base_url'] ?? 'http://localhost:1234', 'general', 'LM Studio Base URL');
-        Setting::setValue('lmstudio_model', $data['lmstudio_model'] ?? '', 'general', 'LM Studio Model');
-        Setting::setValue('gemini_model', $data['gemini_model'] ?? 'gemini-2.0-flash', 'general', 'Gemini Model');
-        Setting::setValue('auto_fix_threshold', $data['auto_fix_threshold'] ?? 'warning', 'general', 'Auto-Fix Threshold');
-        Setting::setValue('auto_fix_enabled', ($data['auto_fix_enabled'] ?? false) ? 'true' : 'false', 'general', 'Auto-Fix Enabled');
+        Setting::setValue('jules_api_key', $data['jules_api_key'] ?? '', 'jules', 'Jules API Key', $userId);
+        Setting::setValue('github_token', $data['github_token'] ?? '', 'github', 'GitHub Personal Access Token', $userId);
+        Setting::setValue('github_webhook_secret', $data['github_webhook_secret'] ?? '', 'github', 'GitHub Webhook Secret', $userId);
+        Setting::setValue('gemini_api_key', $data['gemini_api_key'] ?? '', 'gemini', 'Gemini API Key', $userId);
+        Setting::setValue('ai_provider', $data['ai_provider'] ?? 'gemini', 'general', 'AI Provider', $userId);
+        Setting::setValue('lmstudio_base_url', $data['lmstudio_base_url'] ?? 'http://localhost:1234', 'general', 'LM Studio Base URL', $userId);
+        Setting::setValue('lmstudio_model', $data['lmstudio_model'] ?? '', 'general', 'LM Studio Model', $userId);
+        Setting::setValue('gemini_model', $data['gemini_model'] ?? 'gemini-2.0-flash', 'general', 'Gemini Model', $userId);
+        Setting::setValue('auto_fix_threshold', $data['auto_fix_threshold'] ?? 'warning', 'general', 'Auto-Fix Threshold', $userId);
+        Setting::setValue('auto_fix_enabled', ($data['auto_fix_enabled'] ?? false) ? 'true' : 'false', 'general', 'Auto-Fix Enabled', $userId);
 
         Notification::make()
             ->title('Settings saved successfully')

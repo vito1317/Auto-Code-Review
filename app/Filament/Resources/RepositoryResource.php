@@ -9,6 +9,7 @@ use Filament\Forms\Form;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 class RepositoryResource extends Resource
 {
@@ -65,6 +66,16 @@ class RepositoryResource extends Resource
                         ->default(true)
                         ->helperText('Enable/disable automatic PR reviews for this repo'),
 
+                    Forms\Components\Toggle::make('auto_merge')
+                        ->label('Auto-Merge')
+                        ->default(false)
+                        ->helperText('When enabled, PRs that pass AI review (approved) will be automatically merged'),
+
+                    Forms\Components\Toggle::make('auto_ai_merge')
+                        ->label('AI Merge on Conflict')
+                        ->default(false)
+                        ->helperText('When auto-merge fails due to conflicts, automatically use AI to resolve and retry'),
+
                     Forms\Components\KeyValue::make('review_config')
                         ->label('Review Configuration')
                         ->helperText('Custom key-value config passed to the AI reviewer')
@@ -76,6 +87,11 @@ class RepositoryResource extends Resource
     public static function table(Table $table): Table
     {
         return $table
+            ->modifyQueryUsing(function (Builder $query) {
+                if (! auth()->user()->isAdmin()) {
+                    $query->where('user_id', auth()->id());
+                }
+            })
             ->columns([
                 Tables\Columns\TextColumn::make('name')
                     ->searchable()
@@ -94,6 +110,22 @@ class RepositoryResource extends Resource
                 Tables\Columns\IconColumn::make('is_active')
                     ->label('Active')
                     ->boolean(),
+
+                Tables\Columns\IconColumn::make('auto_merge')
+                    ->label('Auto-Merge')
+                    ->boolean()
+                    ->trueIcon('heroicon-o-arrow-path-rounded-square')
+                    ->falseIcon('heroicon-o-minus-circle')
+                    ->trueColor('success')
+                    ->falseColor('gray'),
+
+                Tables\Columns\IconColumn::make('auto_ai_merge')
+                    ->label('AI Merge')
+                    ->boolean()
+                    ->trueIcon('heroicon-o-sparkles')
+                    ->falseIcon('heroicon-o-minus-circle')
+                    ->trueColor('info')
+                    ->falseColor('gray'),
 
                 Tables\Columns\TextColumn::make('review_tasks_count')
                     ->label('Reviews')
