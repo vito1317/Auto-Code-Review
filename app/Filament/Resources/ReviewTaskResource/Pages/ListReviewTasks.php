@@ -8,7 +8,6 @@ use App\Models\ReviewTask;
 use Filament\Actions;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ListRecords;
-use Illuminate\Support\Str;
 
 class ListReviewTasks extends ListRecords
 {
@@ -68,12 +67,11 @@ class ListReviewTasks extends ListRecords
                 ->modalDescription('This will attempt to merge all approved/fixed PRs. Are you sure?')
                 ->modalSubmitActionLabel('Merge All')
                 ->action(function () {
-                    $github = app(\App\Services\GitHubApiService::class)->forUser(auth()->id());
-
                     $query = ReviewTask::latestIteration()->whereIn('status', [
                         ReviewTask::STATUS_APPROVED,
                         ReviewTask::STATUS_FIXED,
-                    ])->with('repository');
+                    ])->where('pr_status', ReviewTask::PR_STATUS_OPEN)
+                        ->with('repository');
 
                     if (! auth()->user()->isAdmin()) {
                         $query->whereHas('repository', fn ($q) => $q->where('user_id', auth()->id()));
@@ -90,35 +88,22 @@ class ListReviewTasks extends ListRecords
                         return;
                     }
 
-                    $merged = 0;
-                    $errors = [];
+                    $userId = auth()->id();
+                    $delay = 0;
                     foreach ($tasks as $task) {
-                        $repo = $task->repository;
-                        try {
-                            $github->mergePullRequest(
-                                $repo->owner,
-                                $repo->repo,
-                                $task->pr_number,
-                                "Merge PR #{$task->pr_number}: {$task->pr_title}",
-                            );
-                            $task->update(['pr_status' => ReviewTask::PR_STATUS_MERGED]);
-                            $merged++;
-                        } catch (\Throwable $e) {
-                            $msg = $e->getMessage();
-                            if (str_contains($msg, 'not mergeable')) {
-                                $errors[] = "PR #{$task->pr_number}: merge conflicts";
-                            } else {
-                                $errors[] = "PR #{$task->pr_number}: ".Str::limit($msg, 60);
-                            }
-                        }
+                        $task->update([
+                            'merge_status' => ReviewTask::MERGE_QUEUED,
+                            'merge_message' => 'Queued for merge',
+                        ]);
+                        \App\Jobs\MergePrJob::dispatch($task, $userId)
+                            ->delay(now()->addSeconds($delay));
+                        $delay += 5; // 5-second gap between each merge
                     }
 
-                    $body = ! empty($errors) ? implode("\n", $errors) : null;
-
                     Notification::make()
-                        ->title("Merged {$merged} PRs".($errors ? ', '.count($errors).' failed' : ''))
-                        ->body($body)
-                        ->color($errors ? 'warning' : 'success')
+                        ->title("Queued {$tasks->count()} PRs for merging")
+                        ->body('Merges are running in the background. Refresh the page in a moment to see updated statuses.')
+                        ->success()
                         ->send();
                 }),
             Actions\Action::make('sync_pr_status')

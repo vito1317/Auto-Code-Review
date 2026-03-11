@@ -279,6 +279,25 @@ class ReviewTaskResource extends Resource
                     })
                     ->tooltip(fn (ReviewTask $record) => $record->ai_merge_message),
 
+                Tables\Columns\TextColumn::make('merge_status')
+                    ->label('Merge')
+                    ->badge()
+                    ->formatStateUsing(fn (?string $state) => match ($state) {
+                        'queued' => '⏳ Queued',
+                        'merging' => '🔄 Merging',
+                        'merged' => '✅ Merged',
+                        'failed' => '❌ Failed',
+                        default => '—',
+                    })
+                    ->color(fn (?string $state) => match ($state) {
+                        'queued' => 'warning',
+                        'merging' => 'info',
+                        'merged' => 'success',
+                        'failed' => 'danger',
+                        default => 'gray',
+                    })
+                    ->tooltip(fn (ReviewTask $record) => $record->merge_message),
+
                 Tables\Columns\TextColumn::make('iteration')
                     ->label('Iter.')
                     ->alignCenter(),
@@ -320,6 +339,22 @@ class ReviewTaskResource extends Resource
                     ]),
                 Tables\Filters\SelectFilter::make('repository')
                     ->relationship('repository', 'name'),
+                Tables\Filters\SelectFilter::make('ai_merge_status')
+                    ->label('AI Merge')
+                    ->options([
+                        'pending' => '⏳ Pending',
+                        'processing' => '🔄 Processing',
+                        'resolved' => '✅ Resolved',
+                        'failed' => '❌ Failed',
+                    ]),
+                Tables\Filters\SelectFilter::make('merge_status')
+                    ->label('Merge')
+                    ->options([
+                        'queued' => '⏳ Queued',
+                        'merging' => '🔄 Merging',
+                        'merged' => '✅ Merged',
+                        'failed' => '❌ Failed',
+                    ]),
             ])
             ->actions([
                 Tables\Actions\ViewAction::make(),

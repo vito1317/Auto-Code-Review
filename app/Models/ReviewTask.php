@@ -63,6 +63,14 @@ class ReviewTask extends Model
 
     const AI_MERGE_FAILED = 'failed';
 
+    const MERGE_QUEUED = 'queued';
+
+    const MERGE_MERGING = 'merging';
+
+    const MERGE_MERGED = 'merged';
+
+    const MERGE_FAILED = 'failed';
+
     /**
      * Scope: only the latest iteration of each PR per repository.
      */

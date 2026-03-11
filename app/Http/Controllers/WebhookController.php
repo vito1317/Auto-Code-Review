@@ -97,16 +97,16 @@ class WebhookController extends Controller
                 return response('Already merged, skipping', 200);
             }
 
-            // Skip if ANY task for this PR has AI merge in progress
-            $hasActiveAiMerge = ReviewTask::where('repository_id', $repository->id)
+            // Skip if ANY task for this PR has AI merge activity (any status = was already handled)
+            $hasAiMerge = ReviewTask::where('repository_id', $repository->id)
                 ->where('pr_number', $prNumber)
-                ->whereIn('ai_merge_status', ['pending', 'processing'])
+                ->whereNotNull('ai_merge_status')
                 ->exists();
 
-            if ($hasActiveAiMerge) {
-                Log::info('Skipping synchronize: AI merge in progress for PR', ['pr' => $prNumber]);
+            if ($hasAiMerge) {
+                Log::info('Skipping synchronize: AI merge active/completed for PR', ['pr' => $prNumber]);
 
-                return response('AI merge in progress, skipping', 200);
+                return response('AI merge active, skipping', 200);
             }
 
             // Skip if ANY task for this PR is currently being reviewed or fixed
