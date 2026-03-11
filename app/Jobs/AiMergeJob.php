@@ -25,7 +25,7 @@ class AiMergeJob implements ShouldQueue
         public ReviewTask $task,
         public ?int $userId = null,
     ) {
-        $this->onQueue('reviews');
+        $this->onQueue('merges');
     }
 
     public function handle(AiMergeService $aiMerge): void

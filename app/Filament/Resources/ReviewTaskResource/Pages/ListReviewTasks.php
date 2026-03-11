@@ -135,6 +135,7 @@ class ListReviewTasks extends ListRecords
                 ->action(function () {
                     $query = ReviewTask::latestIteration()
                         ->where('pr_status', ReviewTask::PR_STATUS_OPEN)
+                        ->whereNull('ai_merge_status') // Skip already processed
                         ->whereIn('status', [
                             ReviewTask::STATUS_APPROVED,
                             ReviewTask::STATUS_FIXED,
@@ -157,9 +158,12 @@ class ListReviewTasks extends ListRecords
                     }
 
                     $userId = auth()->id();
+                    $delay = 0;
                     foreach ($tasks as $task) {
                         $task->update(['ai_merge_status' => ReviewTask::AI_MERGE_PENDING, 'ai_merge_message' => 'Queued for AI merge']);
-                        \App\Jobs\AiMergeJob::dispatch($task, $userId);
+                        \App\Jobs\AiMergeJob::dispatch($task, $userId)
+                            ->delay(now()->addSeconds($delay));
+                        $delay += 30; // 30-second gap — AI merge is slow (AI API + GitHub API per file)
                     }
 
                     Notification::make()
