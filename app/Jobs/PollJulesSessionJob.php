@@ -53,32 +53,49 @@ class PollJulesSessionJob implements ShouldQueue
                 $session = $result['session'];
                 $sessionState = $result['state'] ?? '';
 
-                // If Jules is waiting for user to publish PR, auto-submit it
+                // If Jules is waiting for user to publish PR, try to auto-submit it
                 if ($sessionState === 'AWAITING_USER_FEEDBACK') {
-                    Log::info('Jules session awaiting feedback, auto-submitting PR', ['task' => $task->id]);
+                    // Track attempts to avoid infinite polling
+                    $attempts = $task->jules_submit_attempts ?? 0;
+                    $maxAttempts = 5;
+
+                    if ($attempts >= $maxAttempts) {
+                        Log::warning('Jules AWAITING_USER_FEEDBACK max attempts reached, creating PR via GitHub API', [
+                            'task' => $task->id,
+                            'attempts' => $attempts,
+                        ]);
+
+                        // Fall back: try to create the PR directly via GitHub API from Jules' branch
+                        $prUrl = $this->createPrFromJulesSession($jules, $github, $session, $task);
+
+                        $task->update([
+                            'status' => $prUrl ? ReviewTask::STATUS_FIXED : ReviewTask::STATUS_FAILED,
+                            'jules_fix_pr_url' => $prUrl,
+                            'error_message' => $prUrl ? null : 'Jules session stuck in AWAITING_USER_FEEDBACK. PR may need to be published manually from the Jules UI.',
+                        ]);
+
+                        return;
+                    }
+
+                    Log::info('Jules session awaiting feedback, sending publish message', [
+                        'task' => $task->id,
+                        'attempt' => $attempts + 1,
+                        'max' => $maxAttempts,
+                    ]);
 
                     try {
-                        $jules->submitPullRequest($task->jules_session_id);
-                        Log::info('Jules PR auto-submitted, re-dispatching poll', ['task' => $task->id]);
+                        $jules->sendMessage($task->jules_session_id, 'Please publish the pull request now. Accept all changes and create the PR.');
                     } catch (\Throwable $e) {
-                        Log::warning('Jules submitPullRequest failed, trying sendMessage', [
+                        Log::warning('Jules sendMessage to publish PR failed', [
                             'task' => $task->id,
                             'error' => $e->getMessage(),
                         ]);
-
-                        // Fallback: try sendMessage to accept
-                        try {
-                            $jules->sendMessage($task->jules_session_id, 'Please publish the pull request.');
-                        } catch (\Throwable $e2) {
-                            Log::warning('Jules sendMessage fallback also failed', [
-                                'task' => $task->id,
-                                'error' => $e2->getMessage(),
-                            ]);
-                        }
                     }
 
-                    // Re-dispatch to check again in 30 seconds
-                    self::dispatch($this->task)->delay(now()->addSeconds(30));
+                    $task->update(['jules_submit_attempts' => $attempts + 1]);
+
+                    // Re-dispatch to check again in 60 seconds
+                    self::dispatch($this->task)->delay(now()->addSeconds(60));
 
                     return;
                 }

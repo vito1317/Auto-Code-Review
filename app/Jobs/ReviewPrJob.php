@@ -121,13 +121,13 @@ class ReviewPrJob implements ShouldQueue
             ]);
 
             // 7. If critical/warning issues found, trigger Jules auto-fix
-            //    (skip auto-fix when auto_merge is enabled — just approve & merge)
-            if ($reviewer->shouldAutoFix($findings) && ! $repo->auto_merge) {
+            if ($reviewer->shouldAutoFix($findings)) {
                 $this->triggerJulesFix($jules, $reviewer, $task, $findings);
             } else {
+                // No critical/warning issues — safe to approve
                 $task->update(['status' => ReviewTask::STATUS_APPROVED]);
 
-                // 8. Auto-merge if enabled for this repository
+                // 8. Auto-merge if enabled for this repository (only for clean PRs)
                 if ($repo->auto_merge) {
                     $this->autoMergePr($github, $repo, $task);
                 }
@@ -144,8 +144,6 @@ class ReviewPrJob implements ShouldQueue
                 'status' => ReviewTask::STATUS_FAILED,
                 'error_message' => $e->getMessage(),
             ]);
-
-            throw $e;
         }
     }
 

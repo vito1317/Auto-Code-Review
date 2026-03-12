@@ -39,7 +39,7 @@ class AiMergeService
 
         // 1. Get PR info to find head and base branches
         $progress('Fetching PR info...');
-        $pr = $this->github->getPullRequest($owner, $repo, $prNumber);
+        $pr = $this->github->withRateLimitRetry(fn () => $this->github->getPullRequest($owner, $repo, $prNumber));
         $headBranch = $pr['head']['ref'] ?? null;
         $baseBranch = $pr['base']['ref'] ?? null;
 
@@ -72,51 +72,111 @@ class AiMergeService
             $progress('Merge conflicts detected, comparing branches...');
         }
 
-        // 3. Compare branches to find changed files
+        // 3. Get only the files this PR actually changed (not all branch differences)
+        $progress('Getting PR changed files...');
         try {
-            $comparison = $this->github->compareBranches($owner, $repo, $headBranch, $baseBranch);
+            $prFiles = $this->github->getPullRequestFiles($owner, $repo, $prNumber);
         } catch (\Throwable $e) {
-            return ['success' => false, 'message' => 'Failed to compare branches: '.$e->getMessage()];
+            return ['success' => false, 'message' => 'Failed to get PR files: '.$e->getMessage()];
         }
 
-        $files = $comparison['files'] ?? [];
-        if (empty($files)) {
-            return ['success' => false, 'message' => 'No changed files found'];
+        if (empty($prFiles)) {
+            return ['success' => false, 'message' => 'No changed files found in PR'];
         }
 
-        // 4. For each changed file, get content from both branches and AI-merge
-        $modifiedFiles = collect($files)->where('status', 'modified');
-        $totalFiles = $modifiedFiles->count();
-        $resolved = 0;
-        $current = 0;
-        foreach ($files as $file) {
-            $path = $file['filename'];
-            $status = $file['status']; // added, removed, modified, renamed
+        // 4. Find the merge-base to detect REAL conflicts
+        //    A file only conflicts when BOTH branches modified it since the merge-base
+        $progress('Finding merge-base and detecting real conflicts...');
+        $mergeBase = null;
+        try {
+            $comparison = $this->github->compareBranches($owner, $repo, $baseBranch, $headBranch);
+            $mergeBase = $comparison['merge_base_commit']['sha'] ?? null;
+        } catch (\Throwable $e) {
+            Log::warning('AI Merge: Could not get merge-base', ['error' => $e->getMessage()]);
+        }
 
-            // Only process modified files (conflicts happen in modified files)
-            if ($status !== 'modified') {
+        if (! $mergeBase) {
+            return ['success' => false, 'message' => 'Could not determine merge-base commit'];
+        }
+
+        Log::info('AI Merge: merge-base found', ['sha' => substr($mergeBase, 0, 8), 'pr' => $prNumber]);
+
+        $conflictingFiles = [];
+        foreach ($prFiles as $file) {
+            if (($file['status'] ?? '') !== 'modified') {
                 continue;
             }
+            $path = $file['filename'];
+            try {
+                // Get file at merge-base (common ancestor)
+                $mergeBaseContent = $this->github->getFileContentRaw($owner, $repo, $path, $mergeBase);
+                // Get file at base branch tip (e.g., current main)
+                $baseContent = $this->github->getFileContentRaw($owner, $repo, $path, $baseBranch);
+
+                // If base branch hasn't changed this file since merge-base, no conflict
+                if ($mergeBaseContent === $baseContent) {
+                    continue;
+                }
+
+                // Both branches modified this file — real conflict!
+                $headContent = $this->github->getFileContentRaw($owner, $repo, $path, $headBranch);
+                $conflictingFiles[] = [
+                    'path' => $path,
+                    'mergeBase' => $mergeBaseContent,
+                    'base' => $baseContent,
+                    'head' => $headContent,
+                ];
+                Log::info('AI Merge: Real conflict detected', ['path' => $path, 'pr' => $prNumber]);
+            } catch (\Throwable $e) {
+                continue;
+            }
+        }
+
+        $totalFiles = count($conflictingFiles);
+        if ($totalFiles === 0) {
+            return ['success' => false, 'message' => 'No conflicting files detected'];
+        }
+
+        $progress("Found {$totalFiles} conflicting file(s), resolving...");
+        $resolved = 0;
+        $current = 0;
+        foreach ($conflictingFiles as $cf) {
+            $path = $cf['path'];
 
             $current++;
             $progress("Resolving file {$current}/{$totalFiles}: {$path}");
 
             try {
-                $baseContent = $this->github->getFileContentRaw($owner, $repo, $path, $baseBranch);
-                $headContent = $this->github->getFileContentRaw($owner, $repo, $path, $headBranch);
+                // Use git merge-file for proper 3-way merge
+                $mergeResult = $this->gitMergeFile($cf['mergeBase'], $cf['base'], $cf['head']);
 
-                // If contents are the same, skip
-                if ($baseContent === $headContent) {
-                    continue;
-                }
+                if ($mergeResult['clean']) {
+                    // Clean merge — no actual conflicts, git resolved it automatically!
+                    $mergedContent = $mergeResult['content'];
+                    $progress("Auto-merged {$current}/{$totalFiles}: {$path} (no conflicts) ✅");
+                } else {
+                    // Has conflicts — extract and send only conflict sections to AI
+                    $conflicts = $this->extractConflictSections($mergeResult['content']);
+                    $conflictCount = count($conflicts);
+                    $progress("AI resolving {$conflictCount} conflict(s) in {$path}...");
 
-                // AI merge the two versions
-                $mergedContent = $this->aiMergeFile($path, $baseContent, $headContent, $userId);
+                    Log::info('AI Merge: Resolving conflicts via AI', [
+                        'path' => $path,
+                        'conflictCount' => $conflictCount,
+                    ]);
 
-                if ($mergedContent === null) {
-                    Log::warning('AI Merge: AI could not merge file', ['path' => $path]);
+                    $mergedContent = $this->resolveConflictsWithAi(
+                        $path,
+                        $mergeResult['content'],
+                        $conflicts,
+                        $userId,
+                    );
 
-                    continue;
+                    if ($mergedContent === null) {
+                        Log::warning('AI Merge: AI could not resolve conflicts', ['path' => $path]);
+
+                        continue;
+                    }
                 }
 
                 // Get the file SHA from the head branch (needed for update)
@@ -217,20 +277,112 @@ class AiMergeService
     }
 
     /**
-     * Use AI to merge two versions of a file.
+     * Perform a 3-way merge using git merge-file.
+     * Returns ['clean' => bool, 'content' => string]
      */
-    private function aiMergeFile(
+    private function gitMergeFile(string $mergeBaseContent, string $baseContent, string $headContent): array
+    {
+        $tmpDir = sys_get_temp_dir();
+        $ancestorFile = tempnam($tmpDir, 'merge_ancestor_');
+        $oursFile = tempnam($tmpDir, 'merge_ours_');
+        $theirsFile = tempnam($tmpDir, 'merge_theirs_');
+
+        try {
+            file_put_contents($ancestorFile, $mergeBaseContent);
+            file_put_contents($oursFile, $baseContent);     // base branch (main)
+            file_put_contents($theirsFile, $headContent);    // PR branch
+
+            // git merge-file -p: outputs merged content to stdout
+            // Exit code: 0 = clean merge, 1 = conflicts, <0 = error
+            $output = [];
+            $exitCode = 0;
+            exec('git merge-file -p '.escapeshellarg($oursFile).' '.escapeshellarg($ancestorFile).' '.escapeshellarg($theirsFile).' 2>/dev/null', $output, $exitCode);
+
+            $content = implode("\n", $output);
+
+            return [
+                'clean' => $exitCode === 0,
+                'content' => $content,
+            ];
+        } finally {
+            @unlink($ancestorFile);
+            @unlink($oursFile);
+            @unlink($theirsFile);
+        }
+    }
+
+    /**
+     * Extract conflict sections from git merge-file output.
+     */
+    private function extractConflictSections(string $content): array
+    {
+        $lines = explode("\n", $content);
+        $conflicts = [];
+        $inConflict = false;
+        $currentConflict = null;
+        $startLine = 0;
+
+        foreach ($lines as $i => $line) {
+            if (str_starts_with($line, '<<<<<<<')) {
+                $inConflict = true;
+                $startLine = $i;
+                $currentConflict = ['ours' => '', 'theirs' => '', 'side' => 'ours', 'startLine' => $i];
+            } elseif ($inConflict && str_starts_with($line, '=======')) {
+                $currentConflict['side'] = 'theirs';
+            } elseif ($inConflict && str_starts_with($line, '>>>>>>>')) {
+                $currentConflict['endLine'] = $i;
+                $conflicts[] = $currentConflict;
+                $inConflict = false;
+                $currentConflict = null;
+            } elseif ($inConflict) {
+                $side = $currentConflict['side'];
+                $currentConflict[$side] .= $line."\n";
+            }
+        }
+
+        return $conflicts;
+    }
+
+    /**
+     * Resolve conflict sections using AI, only sending the conflict parts.
+     */
+    private function resolveConflictsWithAi(
         string $path,
-        string $baseContent,
-        string $headContent,
+        string $contentWithMarkers,
+        array $conflicts,
         ?int $userId = null,
     ): ?string {
         $provider = Setting::getValue('ai_provider', 'gemini', $userId);
 
-        $prompt = $this->buildMergePrompt($path, $baseContent, $headContent);
+        // Build a prompt with only the conflict sections
+        $conflictText = '';
+        foreach ($conflicts as $i => $c) {
+            $num = $i + 1;
+            $conflictText .= "--- Conflict #{$num} ---\n";
+            $conflictText .= "<<<<<<< BASE (main branch)\n";
+            $conflictText .= rtrim($c['ours'], "\n")."\n";
+            $conflictText .= "=======\n";
+            $conflictText .= rtrim($c['theirs'], "\n")."\n";
+            $conflictText .= ">>>>>>> HEAD (PR branch)\n\n";
+        }
+
+        $prompt = <<<PROMPT
+You are a code merge conflict resolver. The file "{$path}" has merge conflicts.
+Below are ONLY the conflicting sections. Resolve each conflict by producing the correct merged code.
+
+{$conflictText}
+Instructions:
+1. For each conflict, produce the resolved version that combines both sides correctly
+2. Output ONLY the resolved code for each conflict, separated by "--- Resolution #N ---"
+3. Do NOT include conflict markers (<<<, ===, >>>)
+4. Do NOT include any explanations, just the code
+5. Preserve indentation and formatting
+
+Output:
+PROMPT;
 
         try {
-            return match ($provider) {
+            $aiResponse = match ($provider) {
                 'lmstudio' => $this->mergeViaLmStudio($prompt, $userId),
                 default => $this->mergeViaGemini($prompt, $userId),
             };
@@ -239,33 +391,71 @@ class AiMergeService
 
             return null;
         }
+
+        if (! $aiResponse) {
+            return null;
+        }
+
+        // Parse AI resolutions
+        $resolutions = $this->parseAiResolutions($aiResponse, count($conflicts));
+
+        // Reconstruct the file by replacing conflict blocks with AI resolutions
+        $lines = explode("\n", $contentWithMarkers);
+        $result = [];
+        $skipUntil = -1;
+
+        foreach ($lines as $i => $line) {
+            if ($i <= $skipUntil) {
+                continue;
+            }
+
+            // Check if this line starts a conflict
+            $conflictIndex = null;
+            foreach ($conflicts as $ci => $c) {
+                if ($c['startLine'] === $i) {
+                    $conflictIndex = $ci;
+
+                    break;
+                }
+            }
+
+            if ($conflictIndex !== null && isset($resolutions[$conflictIndex])) {
+                // Replace the conflict block with AI resolution
+                $result[] = rtrim($resolutions[$conflictIndex], "\n");
+                $skipUntil = $conflicts[$conflictIndex]['endLine'];
+            } else {
+                $result[] = $line;
+            }
+        }
+
+        return implode("\n", $result);
     }
 
-    private function buildMergePrompt(string $path, string $baseContent, string $headContent): string
+    /**
+     * Parse AI response into individual conflict resolutions.
+     */
+    private function parseAiResolutions(string $response, int $expectedCount): array
     {
-        return <<<PROMPT
-You are a code merge assistant. Two branches have modified the same file and there are conflicts.
-Your job is to produce the final merged version that incorporates changes from BOTH versions.
+        // Try to split by "--- Resolution #N ---" markers
+        $parts = preg_split('/---\s*Resolution\s*#?\d+\s*---/i', $response);
 
-File: {$path}
+        // Remove empty first element if present
+        $parts = array_values(array_filter($parts, fn ($p) => trim($p) !== ''));
 
-=== BASE BRANCH VERSION (target branch) ===
-{$baseContent}
-=== END BASE VERSION ===
+        if (count($parts) >= $expectedCount) {
+            return array_map('trim', $parts);
+        }
 
-=== HEAD BRANCH VERSION (PR branch with new changes) ===
-{$headContent}
-=== END HEAD VERSION ===
+        // Fallback: if only 1 conflict, use entire response
+        if ($expectedCount === 1) {
+            return [trim($response)];
+        }
 
-Instructions:
-1. Merge both versions, keeping ALL meaningful changes from both sides
-2. If both sides modified the same section differently, prefer the HEAD (PR) version but incorporate any BASE-only changes
-3. Do NOT include conflict markers (<<<, ===, >>>)
-4. Return ONLY the final merged file content, nothing else — no explanations, no markdown fences, no comments about the merge
-5. Preserve the original file encoding and line endings
+        // Fallback: try splitting by blank lines
+        $parts = preg_split('/\n{3,}/', $response);
+        $parts = array_values(array_filter($parts, fn ($p) => trim($p) !== ''));
 
-Output the merged file content:
-PROMPT;
+        return array_map('trim', $parts);
     }
 
     private function mergeViaGemini(string $prompt, ?int $userId = null): ?string
@@ -298,25 +488,63 @@ PROMPT;
         $model = Setting::getValue('lmstudio_model', 'default', $userId);
         $url = rtrim($baseUrl, '/').'/v1/chat/completions';
 
-        $response = Http::timeout(180)->post($url, [
+        $payload = json_encode([
             'model' => $model,
             'messages' => [
                 ['role' => 'system', 'content' => 'You are a code merge assistant. Output ONLY the merged file content, nothing else.'],
                 ['role' => 'user', 'content' => $prompt],
             ],
             'temperature' => 0.1,
-            'max_tokens' => 8192,
+            'max_tokens' => 16384,
+            'stream' => true,
         ]);
 
-        if ($response->failed()) {
-            throw new \RuntimeException("LM Studio API error ({$response->status()})");
+        // Use raw cURL for SSE streaming — no overall timeout, just connect timeout
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'Accept: text/event-stream',
+            ],
+            CURLOPT_RETURNTRANSFER => false,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT => 0, // No timeout — stream until done
+            CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$fullText) {
+                // Parse SSE lines
+                $lines = explode("\n", $data);
+                foreach ($lines as $line) {
+                    $line = trim($line);
+                    if (! str_starts_with($line, 'data: ')) {
+                        continue;
+                    }
+                    $json = substr($line, 6);
+                    if ($json === '[DONE]') {
+                        break;
+                    }
+                    $decoded = json_decode($json, true);
+                    $delta = $decoded['choices'][0]['delta']['content'] ?? '';
+                    $fullText .= $delta;
+                }
+
+                return strlen($data);
+            },
+        ]);
+
+        $fullText = '';
+        $result = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        if ($result === false || $httpCode >= 400) {
+            throw new \RuntimeException("LM Studio streaming error ({$httpCode}): {$error}");
         }
 
-        $text = $response->json('choices.0.message.content', '');
-
         // Strip thinking tags
-        $text = preg_replace('/<think>.*?<\/think>/s', '', $text);
+        $fullText = preg_replace('/<think>.*?<\/think>/s', '', $fullText);
 
-        return trim($text) ?: null;
+        return trim($fullText) ?: null;
     }
 }

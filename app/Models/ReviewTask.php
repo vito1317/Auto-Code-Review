@@ -20,6 +20,7 @@ class ReviewTask extends Model
         'status',
         'jules_session_id',
         'jules_fix_pr_url',
+        'jules_submit_attempts',
         'review_summary',
         'ai_raw_output',
         'diff_content',

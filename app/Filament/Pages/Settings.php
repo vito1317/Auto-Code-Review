@@ -3,6 +3,7 @@
 namespace App\Filament\Pages;
 
 use App\Models\Setting;
+use App\Services\GitHubAppService;
 use Filament\Forms;
 use Filament\Forms\Concerns\InteractsWithForms;
 use Filament\Forms\Contracts\HasForms;
@@ -34,16 +35,19 @@ class Settings extends Page implements HasForms
         $userId = $this->userId();
 
         $this->form->fill([
-            'jules_api_key' => Setting::getValue('jules_api_key', '', $userId),
-            'github_token' => Setting::getValue('github_token', '', $userId),
-            'github_webhook_secret' => Setting::getValue('github_webhook_secret', '', $userId),
-            'gemini_api_key' => Setting::getValue('gemini_api_key', '', $userId),
-            'ai_provider' => Setting::getValue('ai_provider', 'gemini', $userId),
-            'lmstudio_base_url' => Setting::getValue('lmstudio_base_url', 'http://localhost:1234', $userId),
-            'lmstudio_model' => Setting::getValue('lmstudio_model', '', $userId),
-            'gemini_model' => Setting::getValue('gemini_model', 'gemini-2.0-flash', $userId),
-            'auto_fix_threshold' => Setting::getValue('auto_fix_threshold', 'warning', $userId),
-            'auto_fix_enabled' => Setting::getValue('auto_fix_enabled', 'true', $userId) === 'true',
+            'jules_api_key' => Setting::getUserValue('jules_api_key', '', $userId),
+            'github_token' => Setting::getUserValue('github_token', '', $userId),
+            'github_app_id' => Setting::getUserValue('github_app_id', '', $userId),
+            'github_app_private_key' => Setting::getUserValue('github_app_private_key', '', $userId),
+            'github_app_installation_id' => Setting::getUserValue('github_app_installation_id', '', $userId),
+            'github_webhook_secret' => Setting::getUserValue('github_webhook_secret', '', $userId),
+            'gemini_api_key' => Setting::getUserValue('gemini_api_key', '', $userId),
+            'ai_provider' => Setting::getUserValue('ai_provider', 'gemini', $userId),
+            'lmstudio_base_url' => Setting::getUserValue('lmstudio_base_url', 'http://localhost:1234', $userId),
+            'lmstudio_model' => Setting::getUserValue('lmstudio_model', '', $userId),
+            'gemini_model' => Setting::getUserValue('gemini_model', 'gemini-2.0-flash', $userId),
+            'auto_fix_threshold' => Setting::getUserValue('auto_fix_threshold', 'warning', $userId),
+            'auto_fix_enabled' => Setting::getUserValue('auto_fix_enabled', 'true', $userId) === 'true',
         ]);
     }
 
@@ -67,12 +71,55 @@ class Settings extends Page implements HasForms
                         Forms\Components\Tabs\Tab::make('GitHub')
                             ->icon('heroicon-o-code-bracket')
                             ->schema([
-                                Forms\Components\TextInput::make('github_token')
-                                    ->label('Personal Access Token')
-                                    ->password()
-                                    ->revealable()
-                                    ->helperText('Needs `repo` and `pull_request:write` scopes')
-                                    ->placeholder('ghp_xxxxxxxxxxxx'),
+                                Forms\Components\Section::make('GitHub App (Recommended)')
+                                    ->description('Higher rate limits (5,000/hr per installation). Create an App at github.com/settings/apps')
+                                    ->schema([
+                                        Forms\Components\TextInput::make('github_app_id')
+                                            ->label('App ID')
+                                            ->placeholder('123456')
+                                            ->helperText('Found on your GitHub App\'s settings page'),
+
+                                        Forms\Components\Textarea::make('github_app_private_key')
+                                            ->label('Private Key (.pem)')
+                                            ->rows(5)
+                                            ->placeholder('-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----')
+                                            ->helperText('Generate from your GitHub App settings → Private keys'),
+
+                                        Forms\Components\TextInput::make('github_app_installation_id')
+                                            ->label('Installation ID')
+                                            ->placeholder('12345678')
+                                            ->helperText('Install the App on your org, then check the URL: /installations/{ID}'),
+
+                                        Forms\Components\Actions::make([
+                                            Forms\Components\Actions\Action::make('test_github_app')
+                                                ->label('Test Connection')
+                                                ->icon('heroicon-o-signal')
+                                                ->color('success')
+                                                ->action(function () {
+                                                    $this->save();
+                                                    $result = app(GitHubAppService::class)->testConnection($this->userId());
+                                                    Notification::make()
+                                                        ->title($result['success'] ? 'Connected!' : 'Connection Failed')
+                                                        ->body($result['message'])
+                                                        ->{$result['success'] ? 'success' : 'danger'}()
+                                                        ->send();
+                                                }),
+                                        ]),
+                                    ])
+                                    ->collapsible(),
+
+                                Forms\Components\Section::make('Personal Access Token (Fallback)')
+                                    ->description('Used when GitHub App is not configured')
+                                    ->schema([
+                                        Forms\Components\TextInput::make('github_token')
+                                            ->label('Personal Access Token')
+                                            ->password()
+                                            ->revealable()
+                                            ->helperText('Needs `repo` and `pull_request:write` scopes')
+                                            ->placeholder('ghp_xxxxxxxxxxxx'),
+                                    ])
+                                    ->collapsible()
+                                    ->collapsed(),
 
                                 Forms\Components\Section::make('Webhook')
                                     ->description('All repositories share this webhook configuration')
@@ -170,7 +217,13 @@ class Settings extends Page implements HasForms
 
         Setting::setValue('jules_api_key', $data['jules_api_key'] ?? '', 'jules', 'Jules API Key', $userId);
         Setting::setValue('github_token', $data['github_token'] ?? '', 'github', 'GitHub Personal Access Token', $userId);
+        Setting::setValue('github_app_id', $data['github_app_id'] ?? '', 'github', 'GitHub App ID', $userId);
+        Setting::setValue('github_app_private_key', $data['github_app_private_key'] ?? '', 'github', 'GitHub App Private Key', $userId);
+        Setting::setValue('github_app_installation_id', $data['github_app_installation_id'] ?? '', 'github', 'GitHub App Installation ID', $userId);
         Setting::setValue('github_webhook_secret', $data['github_webhook_secret'] ?? '', 'github', 'GitHub Webhook Secret', $userId);
+
+        // Clear cached App token so next request uses fresh settings
+        app(GitHubAppService::class)->clearTokenCache($userId);
         Setting::setValue('gemini_api_key', $data['gemini_api_key'] ?? '', 'gemini', 'Gemini API Key', $userId);
         Setting::setValue('ai_provider', $data['ai_provider'] ?? 'gemini', 'general', 'AI Provider', $userId);
         Setting::setValue('lmstudio_base_url', $data['lmstudio_base_url'] ?? 'http://localhost:1234', 'general', 'LM Studio Base URL', $userId);

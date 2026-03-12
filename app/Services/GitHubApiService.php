@@ -14,6 +14,13 @@ class GitHubApiService
 
     private array $tokenCache = [];
 
+    private ?GitHubAppService $appService = null;
+
+    public function __construct()
+    {
+        $this->appService = app(GitHubAppService::class);
+    }
+
     /**
      * Set the user context for per-user token resolution.
      */
@@ -25,18 +32,43 @@ class GitHubApiService
     }
 
     /**
-     * Get the GitHub token from settings (per-user with global fallback).
+     * Get the GitHub token — prefers GitHub App installation token, falls back to PAT.
      */
     private function getToken(): string
     {
         $key = $this->userId ?? 0;
 
         if (! isset($this->tokenCache[$key])) {
-            $this->tokenCache[$key] = Setting::getValue('github_token', config('services.github.token', ''), $this->userId);
+            // Try GitHub App first (unless forced to PAT)
+            if (empty($this->forcePatForRequest)) {
+                $appToken = $this->appService->getInstallationToken($this->userId);
+                if ($appToken) {
+                    $this->tokenCache[$key] = $appToken;
+                    $this->usingAppToken = true;
+
+                    return $appToken;
+                }
+            }
+
+            // Fallback to PAT
+            $this->tokenCache[$key] = $this->getPatToken();
+            $this->usingAppToken = false;
         }
 
         return $this->tokenCache[$key];
     }
+
+    /**
+     * Get the Personal Access Token directly.
+     */
+    private function getPatToken(): string
+    {
+        return Setting::getValue('github_token', config('services.github.token', ''), $this->userId);
+    }
+
+    private bool $usingAppToken = false;
+
+    private bool $forcePatForRequest = false;
 
     /**
      * Make an authenticated request to GitHub API.
@@ -60,7 +92,53 @@ class GitHubApiService
 
         $response = $client->{$method}($url, $data);
 
+        // 401 Unauthorized — App token may have expired, clear cache and retry
+        if ($response->status() === 401) {
+            $this->appService->clearTokenCache($this->userId);
+            $this->tokenCache = []; // Clear local cache
+            $client = Http::withHeaders(array_merge(
+                ['Authorization' => "Bearer {$this->getToken()}", 'Accept' => 'application/vnd.github.v3+json', 'X-GitHub-Api-Version' => '2022-11-28'],
+                $headers,
+            ));
+            if ($method !== 'get') {
+                $client = $client->asJson();
+            }
+            $response = $client->{$method}($url, $data);
+        }
+
+        // Rate limit detection: if 403 with "secondary rate limit", wait and retry
+        if ($response->status() === 403 && str_contains($response->body(), 'secondary rate limit')) {
+            Log::warning('GitHub API: Secondary rate limit hit, waiting 60s...', ['endpoint' => $endpoint]);
+            sleep(60);
+            $response = $client->{$method}($url, $data);
+        }
+
         if ($response->failed()) {
+            // 404 with App token — repo may not be in the App's installation scope, try PAT
+            if ($response->status() === 404 && $this->usingAppToken && !$this->forcePatForRequest) {
+                $pat = $this->getPatToken();
+                if (!empty($pat)) {
+                    Log::info('GitHub API: 404 with App token, retrying with PAT', ['endpoint' => $endpoint]);
+                    $patHeaders = array_merge($defaultHeaders, $headers, [
+                        'Authorization' => "Bearer {$pat}",
+                    ]);
+                    $patClient = Http::withHeaders($patHeaders);
+                    if ($method !== 'get') {
+                        $patClient = $patClient->asJson();
+                    }
+                    $response = $patClient->{$method}($url, $data);
+
+                    if ($response->successful()) {
+                        // For diff requests, return raw body
+                        if (isset($headers['Accept']) && $headers['Accept'] === 'application/vnd.github.v3.diff') {
+                            return $response->body();
+                        }
+
+                        return $response->json() ?? [];
+                    }
+                }
+            }
+
             Log::error('GitHub API request failed', [
                 'endpoint' => $endpoint,
                 'status' => $response->status(),
@@ -78,6 +156,26 @@ class GitHubApiService
         }
 
         return $response->json() ?? [];
+    }
+
+    /**
+     * Retry a callable that may hit GitHub rate limits.
+     */
+    public function withRateLimitRetry(callable $fn, int $maxRetries = 3): mixed
+    {
+        for ($i = 0; $i < $maxRetries; $i++) {
+            try {
+                return $fn();
+            } catch (\RuntimeException $e) {
+                if (str_contains($e->getMessage(), 'secondary rate limit') && $i < $maxRetries - 1) {
+                    Log::warning('GitHub API: Rate limit retry '.($i + 1)."/{$maxRetries}");
+                    sleep(60);
+
+                    continue;
+                }
+                throw $e;
+            }
+        }
     }
 
     /**

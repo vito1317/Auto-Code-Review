@@ -88,9 +88,7 @@ class RepositoryResource extends Resource
     {
         return $table
             ->modifyQueryUsing(function (Builder $query) {
-                if (! auth()->user()->isAdmin()) {
-                    $query->where('user_id', auth()->id());
-                }
+                $query->where('user_id', auth()->id());
             })
             ->columns([
                 Tables\Columns\TextColumn::make('name')

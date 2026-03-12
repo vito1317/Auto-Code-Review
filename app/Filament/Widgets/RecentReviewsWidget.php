@@ -10,6 +10,7 @@ use Filament\Widgets\TableWidget as BaseWidget;
 class RecentReviewsWidget extends BaseWidget
 {
     protected static ?int $sort = 2;
+
     protected int|string|array $columnSpan = 'full';
 
     public function table(Table $table): Table
@@ -17,6 +18,7 @@ class RecentReviewsWidget extends BaseWidget
         return $table
             ->query(
                 ReviewTask::query()
+                    ->whereHas('repository', fn ($q) => $q->where('user_id', auth()->id()))
                     ->with('repository')
                     ->latest()
             )
@@ -27,8 +29,8 @@ class RecentReviewsWidget extends BaseWidget
 
                 Tables\Columns\TextColumn::make('pr_number')
                     ->label('PR')
-                    ->formatStateUsing(fn($state) => "#{$state}")
-                    ->url(fn($record) => $record->pr_url)
+                    ->formatStateUsing(fn ($state) => "#{$state}")
+                    ->url(fn ($record) => $record->pr_url)
                     ->openUrlInNewTab()
                     ->color('info'),
 
@@ -43,7 +45,7 @@ class RecentReviewsWidget extends BaseWidget
 
                 Tables\Columns\TextColumn::make('status')
                     ->badge()
-                    ->color(fn(string $state) => match ($state) {
+                    ->color(fn (string $state) => match ($state) {
                         'pending' => 'gray',
                         'reviewing' => 'info',
                         'commented' => 'warning',

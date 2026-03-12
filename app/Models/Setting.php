@@ -47,6 +47,25 @@ class Setting extends Model
     }
 
     /**
+     * Get a user-specific setting ONLY (no global fallback).
+     * Use this for displaying settings in forms where each user should see only their own values.
+     */
+    public static function getUserValue(string $key, mixed $default = null, ?int $userId = null): mixed
+    {
+        if ($userId === null) {
+            return $default;
+        }
+
+        $setting = static::where('key', $key)->where('user_id', $userId)->first();
+
+        if (! $setting || $setting->value === null) {
+            return $default;
+        }
+
+        return static::decryptValue($setting->value);
+    }
+
+    /**
      * Set a setting value by key, optionally scoped to a user.
      */
     public static function setValue(string $key, mixed $value, string $group = 'general', ?string $description = null, ?int $userId = null): void

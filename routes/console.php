@@ -17,18 +17,38 @@ Schedule::command('review:poll')->everyTenMinutes();
 // Retry auto-merge for approved tasks every 10 minutes
 Schedule::command('review:auto-merge')->everyTenMinutes();
 
-// Ensure merges queue workers are always running (2 workers)
+// Cleanup review tasks stuck in "reviewing" status (safety net for killed workers)
+Schedule::command('review:cleanup-stuck')->everyFifteenMinutes();
+
+// Re-dispatch any pending tasks that lost their queue jobs
+Schedule::command('review:retry-pending')->everyFifteenMinutes();
+
+// Sync PR statuses from GitHub (detect merged/closed PRs)
 Schedule::call(function () {
-    $workerCount = (int) trim(shell_exec("ps aux | grep 'queue=merges' | grep -v grep | wc -l") ?? '0');
-    $desired = 2;
-    $toStart = $desired - $workerCount;
+    \App\Jobs\SyncPrStatusJob::dispatch();
+})->everyThirtyMinutes()->name('sync-pr-status');
 
-    for ($i = 0; $i < $toStart; $i++) {
-        $logFile = storage_path('logs/worker-merges-'.($workerCount + $i + 1).'.log');
-        exec('nohup php '.base_path('artisan')." queue:work --sleep=3 --tries=3 --timeout=300 --max-time=3600 --queue=merges > {$logFile} 2>&1 &");
-    }
+// Ensure queue workers are always running for reviews and merges
+Schedule::call(function () {
+    $queues = [
+        'reviews' => ['desired' => 1, 'timeout' => 300, 'tries' => 1],
+        'merges'  => ['desired' => 1, 'timeout' => 900, 'tries' => 5],
+    ];
 
-    if ($toStart > 0) {
-        \Illuminate\Support\Facades\Log::info("Started {$toStart} merges queue workers (had {$workerCount}/{$desired})");
+    foreach ($queues as $queue => $config) {
+        $workerCount = (int) trim(shell_exec("ps aux | grep '[q]ueue:work' | grep '--queue={$queue}' | wc -l") ?? '0');
+        $toStart = $config['desired'] - $workerCount;
+
+        for ($i = 0; $i < $toStart; $i++) {
+            $logFile = storage_path("logs/worker-{$queue}.log");
+            $timeout = $config['timeout'];
+            $tries = $config['tries'];
+            exec('nohup php ' . base_path('artisan') . " queue:work --sleep=5 --tries={$tries} --timeout={$timeout} --max-time=7200 --queue={$queue} >> {$logFile} 2>&1 &");
+        }
+
+        if ($toStart > 0) {
+            \Illuminate\Support\Facades\Log::info("Started {$toStart} {$queue} queue workers (had {$workerCount}/{$config['desired']})");
+        }
     }
-})->everyMinute()->name('ensure-merges-workers');
+})->everyMinute()->name('ensure-queue-workers');
+

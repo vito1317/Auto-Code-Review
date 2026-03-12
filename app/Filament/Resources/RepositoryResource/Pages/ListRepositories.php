@@ -27,6 +27,8 @@ class ListRepositories extends ListRecords
                 ->action(function () {
                     try {
                         $jules = app(JulesApiService::class);
+                        $jules->forUser(auth()->id());
+                        $userId = auth()->id();
                         $imported = 0;
                         $skipped = 0;
                         $pageToken = null;
@@ -49,23 +51,25 @@ class ListRepositories extends ListRecords
                                     continue;
                                 }
 
-                                // Skip if already exists
-                                if (Repository::where('owner', $owner)->where('repo', $repo)->exists()) {
+                                // Use updateOrCreate keyed on the UNIQUE(owner, repo) constraint
+                                $existed = Repository::where('owner', $owner)->where('repo', $repo)->exists();
+
+                                Repository::updateOrCreate(
+                                    ['owner' => $owner, 'repo' => $repo],
+                                    [
+                                        'user_id' => $userId,
+                                        'name' => "{$owner}/{$repo}",
+                                        'jules_source' => $source['name'] ?? "sources/github/{$owner}/{$repo}",
+                                        'default_branch' => 'main',
+                                        'is_active' => true,
+                                    ]
+                                );
+
+                                if ($existed) {
                                     $skipped++;
-
-                                    continue;
+                                } else {
+                                    $imported++;
                                 }
-
-                                Repository::create([
-                                    'name' => "{$owner}/{$repo}",
-                                    'owner' => $owner,
-                                    'repo' => $repo,
-                                    'jules_source' => $source['name'] ?? "sources/github/{$owner}/{$repo}",
-                                    'default_branch' => 'main',
-                                    'is_active' => true,
-                                ]);
-
-                                $imported++;
                             }
                         } while ($pageToken);
 

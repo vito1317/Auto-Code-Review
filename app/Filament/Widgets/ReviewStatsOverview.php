@@ -13,12 +13,18 @@ class ReviewStatsOverview extends StatsOverviewWidget
 
     protected function getStats(): array
     {
-        $totalReviews = ReviewTask::count();
-        $approvedReviews = ReviewTask::where('status', 'approved')->count();
-        $fixedReviews = ReviewTask::where('status', 'fixed')->count();
-        $failedReviews = ReviewTask::where('status', 'failed')->count();
-        $activeRepos = Repository::where('is_active', true)->count();
-        $pendingReviews = ReviewTask::whereIn('status', ['pending', 'reviewing', 'fixing'])->count();
+        $userId = auth()->id();
+
+        // Scope all queries to current user's repositories
+        $userRepoIds = Repository::where('user_id', $userId)->pluck('id');
+        $taskQuery = ReviewTask::whereIn('repository_id', $userRepoIds);
+
+        $totalReviews = (clone $taskQuery)->count();
+        $approvedReviews = (clone $taskQuery)->where('status', 'approved')->count();
+        $fixedReviews = (clone $taskQuery)->where('status', 'fixed')->count();
+        $failedReviews = (clone $taskQuery)->where('status', 'failed')->count();
+        $activeRepos = Repository::where('user_id', $userId)->where('is_active', true)->count();
+        $pendingReviews = (clone $taskQuery)->whereIn('status', ['pending', 'reviewing', 'fixing'])->count();
 
         $passRate = $totalReviews > 0
             ? round(($approvedReviews / $totalReviews) * 100, 1)
@@ -29,7 +35,7 @@ class ReviewStatsOverview extends StatsOverviewWidget
                 ->description("{$pendingReviews} in progress")
                 ->descriptionIcon('heroicon-m-arrow-trending-up')
                 ->color('primary')
-                ->chart($this->getReviewTrend()),
+                ->chart($this->getReviewTrend($userRepoIds)),
 
             Stat::make('Pass Rate', "{$passRate}%")
                 ->description("{$approvedReviews} approved, {$fixedReviews} auto-fixed")
@@ -37,7 +43,7 @@ class ReviewStatsOverview extends StatsOverviewWidget
                 ->color($passRate >= 70 ? 'success' : ($passRate >= 40 ? 'warning' : 'danger')),
 
             Stat::make('Active Repos', $activeRepos)
-                ->description(Repository::count() . ' total repositories')
+                ->description(Repository::where('user_id', $userId)->count().' total repositories')
                 ->descriptionIcon('heroicon-m-code-bracket-square')
                 ->color('info'),
 
@@ -48,13 +54,13 @@ class ReviewStatsOverview extends StatsOverviewWidget
         ];
     }
 
-    private function getReviewTrend(): array
+    private function getReviewTrend($userRepoIds): array
     {
-        // Get review counts for the last 7 days
         $trend = [];
         for ($i = 6; $i >= 0; $i--) {
             $date = now()->subDays($i)->toDateString();
-            $trend[] = ReviewTask::whereDate('created_at', $date)->count();
+            $trend[] = ReviewTask::whereIn('repository_id', $userRepoIds)
+                ->whereDate('created_at', $date)->count();
         }
 
         return $trend;

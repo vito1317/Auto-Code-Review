@@ -15,11 +15,11 @@ class AiMergeJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $tries = 3;
+    public int $tries = 5;
 
-    public int $backoff = 60; // wait 60 seconds between retries (rate limit recovery)
+    public int $backoff = 120; // wait 120 seconds between retries (rate limit recovery)
 
-    public int $timeout = 300; // 5 minutes
+    public int $timeout = 900; // 15 minutes (streaming can be slow for large files)
 
     public function __construct(
         public ReviewTask $task,
@@ -70,25 +70,68 @@ class AiMergeJob implements ShouldQueue
                     'message' => $result['message'],
                 ]);
             } else {
+                $msg = $result['message'];
+                $isRetryable = str_contains($msg, 'rate limit')
+                    || str_contains($msg, 'timed out')
+                    || str_contains($msg, '403')
+                    || str_contains($msg, '502')
+                    || str_contains($msg, '503')
+                    || str_contains($msg, 'merge failed')
+                    || str_contains($msg, 'merge still failed');
+
+                if ($isRetryable) {
+                    $attempt = $this->attempts();
+                    $task->update([
+                        'ai_merge_status' => ReviewTask::AI_MERGE_PROCESSING,
+                        'ai_merge_message' => "Retry {$attempt}/{$this->tries}: {$msg} — cooling down 60s...",
+                    ]);
+
+                    Log::warning('AiMergeJob: Retryable failure', [
+                        'task' => $task->id,
+                        'attempt' => $attempt,
+                        'message' => $msg,
+                    ]);
+
+                    throw new \RuntimeException("AI merge retryable: {$msg}");
+                }
+
+                // Permanent failure (e.g., "could not resolve any files")
                 $task->update([
                     'ai_merge_status' => ReviewTask::AI_MERGE_FAILED,
-                    'ai_merge_message' => $result['message'],
+                    'ai_merge_message' => $msg,
                 ]);
 
-                Log::warning('AiMergeJob: Failed', [
+                Log::warning('AiMergeJob: Permanent failure', [
                     'task' => $task->id,
-                    'message' => $result['message'],
+                    'message' => $msg,
                 ]);
             }
         } catch (\Throwable $e) {
+            $msg = $e->getMessage();
+            $isRetryable = str_contains($msg, 'rate limit')
+                || str_contains($msg, 'timed out')
+                || str_contains($msg, '403')
+                || str_contains($msg, '502')
+                || str_contains($msg, '503')
+                || str_contains($msg, 'retryable');
+
+            if ($isRetryable) {
+                $attempt = $this->attempts();
+                $task->update([
+                    'ai_merge_status' => ReviewTask::AI_MERGE_PROCESSING,
+                    'ai_merge_message' => "Retry {$attempt}/{$this->tries}: {$msg} — cooling down 60s...",
+                ]);
+                throw $e; // Let Laravel retry with backoff
+            }
+
             $task->update([
                 'ai_merge_status' => ReviewTask::AI_MERGE_FAILED,
-                'ai_merge_message' => 'Exception: '.$e->getMessage(),
+                'ai_merge_message' => 'Exception: '.$msg,
             ]);
 
             Log::error('AiMergeJob: Exception', [
                 'task' => $task->id,
-                'error' => $e->getMessage(),
+                'error' => $msg,
             ]);
         }
     }
