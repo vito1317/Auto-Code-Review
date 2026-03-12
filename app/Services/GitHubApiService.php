@@ -71,6 +71,24 @@ class GitHubApiService
     private bool $forcePatForRequest = false;
 
     /**
+     * Make a request forced to use PAT (user account) instead of App token.
+     * Used for review comments so they appear from the user, not the bot.
+     */
+    private function requestWithPat(string $method, string $endpoint, array $data = [], array $headers = []): mixed
+    {
+        $this->forcePatForRequest = true;
+        $savedCache = $this->tokenCache;
+        $this->tokenCache = [];
+
+        try {
+            return $this->request($method, $endpoint, $data, $headers);
+        } finally {
+            $this->forcePatForRequest = false;
+            $this->tokenCache = $savedCache;
+        }
+    }
+
+    /**
      * Make an authenticated request to GitHub API.
      */
     private function request(string $method, string $endpoint, array $data = [], array $headers = []): mixed
@@ -227,7 +245,7 @@ class GitHubApiService
             $payload['comments'] = $comments;
         }
 
-        return $this->request('post', "/repos/{$owner}/{$repo}/pulls/{$prNumber}/reviews", $payload);
+        return $this->requestWithPat('post', "/repos/{$owner}/{$repo}/pulls/{$prNumber}/reviews", $payload);
     }
 
     /**
@@ -235,7 +253,7 @@ class GitHubApiService
      */
     public function createIssueComment(string $owner, string $repo, int $prNumber, string $body): array
     {
-        return $this->request('post', "/repos/{$owner}/{$repo}/issues/{$prNumber}/comments", [
+        return $this->requestWithPat('post', "/repos/{$owner}/{$repo}/issues/{$prNumber}/comments", [
             'body' => $body,
         ]);
     }
@@ -253,7 +271,7 @@ class GitHubApiService
         int $line,
         string $side = 'RIGHT',
     ): array {
-        return $this->request('post', "/repos/{$owner}/{$repo}/pulls/{$prNumber}/comments", [
+        return $this->requestWithPat('post', "/repos/{$owner}/{$repo}/pulls/{$prNumber}/comments", [
             'body' => $body,
             'commit_id' => $commitId,
             'path' => $path,

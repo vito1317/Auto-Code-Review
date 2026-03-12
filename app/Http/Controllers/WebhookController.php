@@ -166,7 +166,7 @@ class WebhookController extends Controller
         Log::info('Review task created', [
             'task_id' => $task->id,
             'pr' => "{$owner}/{$repo}#{$prNumber}",
-            'iteration' => $iteration,
+            'iteration' => $task->iteration,
         ]);
 
         // Dispatch the review job

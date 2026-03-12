@@ -205,6 +205,19 @@ PROMPT;
             ];
         }
 
+        // Attempt 1b: clean common JSON issues and retry
+        $cleaned = $this->cleanJsonText($text);
+        $parsed = json_decode($cleaned, true, 512);
+        if (json_last_error() === JSON_ERROR_NONE && is_array($parsed)) {
+            Log::info('JSON parsed after cleanup');
+
+            return [
+                'summary' => $parsed['summary'] ?? '',
+                'overall_quality' => strtolower($parsed['overall_quality'] ?? 'acceptable'),
+                'findings' => $parsed['findings'] ?? [],
+            ];
+        }
+
         // Attempt 2: extract top-level fields via regex (handles embedded code in strings)
         Log::info('JSON direct parse failed, trying regex extraction', ['error' => json_last_error_msg()]);
 
@@ -222,10 +235,23 @@ PROMPT;
         // Try to extract the findings array by finding balanced brackets
         if (preg_match('/"findings"\s*:\s*(\[.*\])\s*\}?\s*$/s', $text, $m)) {
             $findingsJson = $m[1];
+            // Try decoding the whole array first
             $decodedFindings = json_decode($findingsJson, true, 512);
             if (json_last_error() === JSON_ERROR_NONE && is_array($decodedFindings)) {
                 $findings = $decodedFindings;
+            } else {
+                // Try cleaned version
+                $cleanedFindings = $this->cleanJsonText($findingsJson);
+                $decodedFindings = json_decode($cleanedFindings, true, 512);
+                if (json_last_error() === JSON_ERROR_NONE && is_array($decodedFindings)) {
+                    $findings = $decodedFindings;
+                }
             }
+        }
+
+        // Attempt 3: extract individual finding objects if array parse failed
+        if (empty($findings)) {
+            $findings = $this->extractFindingsViaRegex($text);
         }
 
         if ($summary || $quality !== 'acceptable' || ! empty($findings)) {
@@ -244,6 +270,77 @@ PROMPT;
         Log::warning('Failed to parse AI review response', ['text' => substr($text, 0, 500)]);
 
         return ['summary' => '', 'overall_quality' => 'unknown', 'findings' => []];
+    }
+
+    /**
+     * Clean common JSON issues from LM Studio outputs.
+     */
+    private function cleanJsonText(string $text): string
+    {
+        // Remove trailing commas before ] or }
+        $text = preg_replace('/,\s*([}\]])/', '$1', $text);
+
+        // Fix unescaped control characters inside strings
+        $text = preg_replace_callback('/"(?:[^"\\\\]|\\\\.)*"/s', function ($m) {
+            $str = $m[0];
+            // Only fix actual control chars that aren't already escaped
+            $str = preg_replace('/(?<!\\\\)\t/', '\\t', $str);
+
+            return $str;
+        }, $text);
+
+        // Remove BOM and zero-width chars
+        $text = preg_replace('/^\xEF\xBB\xBF/', '', $text);
+        $text = preg_replace('/[\x{200B}-\x{200D}\x{FEFF}]/u', '', $text);
+
+        return $text;
+    }
+
+    /**
+     * Extract individual finding objects from text when array JSON is malformed.
+     */
+    private function extractFindingsViaRegex(string $text): array
+    {
+        $findings = [];
+
+        // Match individual finding objects by looking for severity + title patterns
+        $pattern = '/\{[^{}]*?"severity"\s*:\s*"(critical|warning|suggestion|info)"[^{}]*?"title"\s*:\s*"((?:[^"\\\\]|\\\\.)*)"[^{}]*?"file_path"\s*:\s*"((?:[^"\\\\]|\\\\.)*)"[^{}]*?\}/s';
+
+        if (preg_match_all($pattern, $text, $matches, PREG_SET_ORDER)) {
+            foreach ($matches as $m) {
+                $findings[] = [
+                    'severity' => $m[1],
+                    'title' => stripslashes($m[2]),
+                    'file_path' => stripslashes($m[3]),
+                    'line_number' => null,
+                    'category' => 'general',
+                    'body' => '',
+                ];
+            }
+        }
+
+        // Also try opposite field order (file_path before severity)
+        if (empty($findings)) {
+            $pattern2 = '/\{[^{}]*?"file_path"\s*:\s*"((?:[^"\\\\]|\\\\.)*)"[^{}]*?"severity"\s*:\s*"(critical|warning|suggestion|info)"[^{}]*?"title"\s*:\s*"((?:[^"\\\\]|\\\\.)*)"[^{}]*?\}/s';
+            if (preg_match_all($pattern2, $text, $matches, PREG_SET_ORDER)) {
+                foreach ($matches as $m) {
+                    $findings[] = [
+                        'severity' => $m[2],
+                        'title' => stripslashes($m[3]),
+                        'file_path' => stripslashes($m[1]),
+                        'line_number' => null,
+                        'category' => 'general',
+                        'body' => '',
+                    ];
+                }
+            }
+        }
+
+        if (! empty($findings)) {
+            Log::info('Extracted findings via individual object regex', ['count' => count($findings)]);
+        }
+
+        return $findings;
     }
 
     private function getResponseSchema(): array

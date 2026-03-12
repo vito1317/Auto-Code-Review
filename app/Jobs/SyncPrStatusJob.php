@@ -27,7 +27,7 @@ class SyncPrStatusJob implements ShouldQueue
 
     public function handle(GitHubApiService $github): void
     {
-        $query = ReviewTask::where('pr_status', ReviewTask::PR_STATUS_OPEN)
+        $query = ReviewTask::whereIn('pr_status', [ReviewTask::PR_STATUS_OPEN, ReviewTask::PR_STATUS_CLOSED])
             ->with('repository');
 
         if ($this->userId) {
