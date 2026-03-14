@@ -226,7 +226,7 @@ class AiMergeService
                 "Merge {$baseBranch} into {$headBranch}: AI-resolved conflicts for PR #{$prNumber}",
             );
             Log::info('AI Merge: Base merged into head branch', compact('prNumber'));
-            sleep(3);
+            sleep(10); // GitHub needs time to update mergeable state
         } catch (\Throwable $e) {
             Log::warning('AI Merge: Branch merge failed, trying updatePullRequestBranch', [
                 'error' => $e->getMessage(),
@@ -236,7 +236,7 @@ class AiMergeService
             try {
                 $this->github->updatePullRequestBranch($owner, $repo, $prNumber);
                 Log::info('AI Merge: Branch updated via updatePullRequestBranch', compact('prNumber'));
-                sleep(3);
+                sleep(10);
             } catch (\Throwable $e2) {
                 Log::warning('AI Merge: Both branch update methods failed', [
                     'error' => $e2->getMessage(),
@@ -245,7 +245,7 @@ class AiMergeService
         }
 
         // 7. Retry merge (with retry for 'already in progress')
-        $maxRetries = 3;
+        $maxRetries = 5;
         for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
             $progress("Final merge: attempt {$attempt}/{$maxRetries}...");
             try {
@@ -260,8 +260,12 @@ class AiMergeService
 
                 return ['success' => true, 'message' => "Resolved {$resolved} files and merged successfully"];
             } catch (\Throwable $e) {
-                if (str_contains($e->getMessage(), 'already in progress') && $attempt < $maxRetries) {
-                    sleep(5);
+                if ($attempt < $maxRetries) {
+                    Log::info('AI Merge: Merge attempt failed, waiting before retry', [
+                        'attempt' => $attempt,
+                        'error' => $e->getMessage(),
+                    ]);
+                    sleep(5 * $attempt); // Progressive backoff: 5s, 10s, 15s, 20s
 
                     continue;
                 }

@@ -25,11 +25,8 @@ class ListReviewTasks extends ListRecords
                 ->modalDescription('This will reset all failed tasks to pending and re-dispatch them for review. Are you sure?')
                 ->modalSubmitActionLabel('Retry All')
                 ->action(function () {
-                    $query = ReviewTask::where('status', ReviewTask::STATUS_FAILED);
-
-                    if (! auth()->user()->isAdmin()) {
-                        $query->whereHas('repository', fn ($q) => $q->where('user_id', auth()->id()));
-                    }
+                    $query = ReviewTask::where('status', ReviewTask::STATUS_FAILED)
+                        ->whereHas('repository', fn ($q) => $q->where('user_id', auth()->id()));
 
                     $tasks = $query->get();
 
@@ -71,11 +68,8 @@ class ListReviewTasks extends ListRecords
                         ReviewTask::STATUS_APPROVED,
                         ReviewTask::STATUS_FIXED,
                     ])->where('pr_status', ReviewTask::PR_STATUS_OPEN)
+                        ->whereHas('repository', fn ($q) => $q->where('user_id', auth()->id()))
                         ->with('repository');
-
-                    if (! auth()->user()->isAdmin()) {
-                        $query->whereHas('repository', fn ($q) => $q->where('user_id', auth()->id()));
-                    }
 
                     $tasks = $query->get();
 
@@ -115,8 +109,7 @@ class ListReviewTasks extends ListRecords
                 ->modalDescription('This will fetch the current status (open/closed/merged) of all open PRs from GitHub in the background.')
                 ->modalSubmitActionLabel('Sync')
                 ->action(function () {
-                    $userId = auth()->user()->isAdmin() ? null : auth()->id();
-                    \App\Jobs\SyncPrStatusJob::dispatch($userId);
+                    \App\Jobs\SyncPrStatusJob::dispatch(auth()->id());
 
                     Notification::make()
                         ->title('PR status sync started')
@@ -140,11 +133,8 @@ class ListReviewTasks extends ListRecords
                             ReviewTask::STATUS_APPROVED,
                             ReviewTask::STATUS_FIXED,
                         ])
+                        ->whereHas('repository', fn ($q) => $q->where('user_id', auth()->id()))
                         ->with('repository');
-
-                    if (! auth()->user()->isAdmin()) {
-                        $query->whereHas('repository', fn ($q) => $q->where('user_id', auth()->id()));
-                    }
 
                     $tasks = $query->get();
 

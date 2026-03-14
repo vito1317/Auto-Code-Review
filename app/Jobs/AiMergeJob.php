@@ -75,9 +75,7 @@ class AiMergeJob implements ShouldQueue
                     || str_contains($msg, 'timed out')
                     || str_contains($msg, '403')
                     || str_contains($msg, '502')
-                    || str_contains($msg, '503')
-                    || str_contains($msg, 'merge failed')
-                    || str_contains($msg, 'merge still failed');
+                    || str_contains($msg, '503');
 
                 if ($isRetryable) {
                     $attempt = $this->attempts();

@@ -260,10 +260,6 @@ class ReviewTaskResource extends Resource
             ->modifyQueryUsing(function (Builder $query) {
                 // Only show the latest iteration of each PR
                 $query->latestIteration();
-
-                if (! auth()->user()->isAdmin()) {
-                    $query->whereHas('repository', fn (Builder $q) => $q->where('user_id', auth()->id()));
-                }
             })
             ->defaultSort('created_at', 'desc')
             ->poll('10s')
