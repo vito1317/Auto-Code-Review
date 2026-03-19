@@ -18,11 +18,15 @@ class RecentReviewsWidget extends BaseWidget
         return $table
             ->query(
                 ReviewTask::query()
+                    ->select([
+                        'id', 'repository_id', 'pr_number', 'pr_title', 
+                        'pr_url', 'pr_author', 'status', 'created_at'
+                    ])
                     ->whereHas('repository', fn ($q) => $q->where('user_id', auth()->id()))
                     ->with('repository')
                     ->latest()
+                    ->limit(10)
             )
-            ->defaultPaginationPageOption(10)
             ->columns([
                 Tables\Columns\TextColumn::make('repository.name')
                     ->label('Repo'),

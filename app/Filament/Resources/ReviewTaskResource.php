@@ -260,6 +260,14 @@ class ReviewTaskResource extends Resource
             ->modifyQueryUsing(function (Builder $query) {
                 // Only show the latest iteration of each PR
                 $query->latestIteration();
+                $query->select([
+                    'review_tasks.id', 'review_tasks.repository_id', 'review_tasks.pr_number',
+                    'review_tasks.pr_title', 'review_tasks.pr_url', 'review_tasks.pr_author',
+                    'review_tasks.pr_status', 'review_tasks.ai_merge_status', 'review_tasks.ai_merge_message',
+                    'review_tasks.merge_status', 'review_tasks.merge_message', 'review_tasks.status',
+                    'review_tasks.jules_session_id', 'review_tasks.jules_fix_pr_url', 'review_tasks.iteration',
+                    'review_tasks.error_message', 'review_tasks.created_at', 'review_tasks.updated_at'
+                ]);
             })
             ->defaultSort('created_at', 'desc')
             ->poll('10s')

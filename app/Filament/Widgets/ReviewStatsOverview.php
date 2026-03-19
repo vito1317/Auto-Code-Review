@@ -16,8 +16,8 @@ class ReviewStatsOverview extends StatsOverviewWidget
         $userId = auth()->id();
 
         // Scope all queries to current user's repositories
-        $userRepoIds = Repository::where('user_id', $userId)->pluck('id');
-        $taskQuery = ReviewTask::whereIn('repository_id', $userRepoIds);
+        $userRepoQuery = Repository::select('id')->where('user_id', $userId);
+        $taskQuery = ReviewTask::whereIn('repository_id', $userRepoQuery);
 
         $totalReviews = (clone $taskQuery)->count();
         $approvedReviews = (clone $taskQuery)->where('status', 'approved')->count();
@@ -35,7 +35,7 @@ class ReviewStatsOverview extends StatsOverviewWidget
                 ->description("{$pendingReviews} in progress")
                 ->descriptionIcon('heroicon-m-arrow-trending-up')
                 ->color('primary')
-                ->chart($this->getReviewTrend($userRepoIds)),
+                ->chart($this->getReviewTrend($userRepoQuery)),
 
             Stat::make('Pass Rate', "{$passRate}%")
                 ->description("{$approvedReviews} approved, {$fixedReviews} auto-fixed")
@@ -54,12 +54,12 @@ class ReviewStatsOverview extends StatsOverviewWidget
         ];
     }
 
-    private function getReviewTrend($userRepoIds): array
+    private function getReviewTrend($userRepoQuery): array
     {
         $trend = [];
         for ($i = 6; $i >= 0; $i--) {
             $date = now()->subDays($i)->toDateString();
-            $trend[] = ReviewTask::whereIn('repository_id', $userRepoIds)
+            $trend[] = ReviewTask::whereIn('repository_id', clone $userRepoQuery)
                 ->whereDate('created_at', $date)->count();
         }
 
