@@ -50,6 +50,14 @@ class ReviewPrJob implements ShouldQueue
         $repo = $task->repository;
         $userId = $repo->user_id;
 
+        // Skip tasks for PRs that are already closed or merged
+        if (in_array($task->pr_status, [ReviewTask::PR_STATUS_CLOSED, ReviewTask::PR_STATUS_MERGED], true)) {
+            Log::info('Skipping review: PR already closed/merged', ['task' => $task->id, 'pr_status' => $task->pr_status]);
+            $task->update(['status' => ReviewTask::STATUS_APPROVED, 'review_summary' => 'Skipped: PR already '.$task->pr_status]);
+
+            return;
+        }
+
         // Set per-user context for API services
         $github->forUser($userId);
         $jules->forUser($userId);
@@ -199,12 +207,27 @@ class ReviewPrJob implements ShouldQueue
         array $findings,
     ): void {
         $repo = $task->repository;
+        $sourceId = $repo->getJulesSourceIdentifier();
+
+        // Verify the repo exists as a Jules source before attempting to create a session
+        try {
+            $jules->getSource($sourceId);
+        } catch (\Throwable) {
+            Log::info('Jules source not found, skipping auto-fix', [
+                'task' => $task->id,
+                'source' => $sourceId,
+            ]);
+
+            $task->update(['status' => ReviewTask::STATUS_COMMENTED]);
+
+            return;
+        }
 
         $prompt = $reviewer->buildJulesFixPrompt($findings, $task->pr_number);
 
         try {
             $session = $jules->createSession(
-                source: $repo->getJulesSourceIdentifier(),
+                source: $sourceId,
                 prompt: $prompt,
                 branch: $repo->default_branch,
                 automationMode: 'AUTO_CREATE_PR',
@@ -307,31 +330,13 @@ class ReviewPrJob implements ShouldQueue
                     'pr' => "{$repo->owner}/{$repo->repo}#{$task->pr_number}",
                 ]);
 
-                try {
-                    $github->createIssueComment(
-                        $repo->owner,
-                        $repo->repo,
-                        $task->pr_number,
-                        "⚠️ **Auto-Merge Failed**: Merge conflicts detected.\n\n🤖 **AI Merge** has been automatically triggered to resolve conflicts.",
-                    );
-                } catch (\Throwable) {
-                    // Silently ignore comment failure
-                }
-
                 return;
             }
 
-            // Post a comment letting them know auto-merge failed
-            try {
-                $github->createIssueComment(
-                    $repo->owner,
-                    $repo->repo,
-                    $task->pr_number,
-                    "⚠️ **Auto-Merge Failed**: This PR passed AI review but could not be merged automatically.\n\nReason: {$e->getMessage()}\n\nPlease merge manually.",
-                );
-            } catch (\Throwable) {
-                // Silently ignore comment failure
-            }
+            Log::warning('Auto-merge failed, not posting comment to PR', [
+                'task' => $task->id,
+                'reason' => $e->getMessage(),
+            ]);
         }
     }
 

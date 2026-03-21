@@ -1,5 +1,6 @@
 <?php
 
+use App\Jobs\SyncPrStatusJob;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
@@ -25,30 +26,7 @@ Schedule::command('review:retry-pending')->everyFifteenMinutes();
 
 // Sync PR statuses from GitHub (detect merged/closed PRs)
 Schedule::call(function () {
-    \App\Jobs\SyncPrStatusJob::dispatch();
+    SyncPrStatusJob::dispatch();
 })->everyThirtyMinutes()->name('sync-pr-status');
 
-// Ensure queue workers are always running for reviews and merges
-Schedule::call(function () {
-    $queues = [
-        'reviews' => ['desired' => 1, 'timeout' => 300, 'tries' => 1],
-        'merges'  => ['desired' => 1, 'timeout' => 900, 'tries' => 5],
-    ];
-
-    foreach ($queues as $queue => $config) {
-        $workerCount = (int) trim(shell_exec("ps aux | grep '[q]ueue:work' | grep '--queue={$queue}' | wc -l") ?? '0');
-        $toStart = $config['desired'] - $workerCount;
-
-        for ($i = 0; $i < $toStart; $i++) {
-            $logFile = storage_path("logs/worker-{$queue}.log");
-            $timeout = $config['timeout'];
-            $tries = $config['tries'];
-            exec('nohup php ' . base_path('artisan') . " queue:work --sleep=5 --tries={$tries} --timeout={$timeout} --max-time=7200 --queue={$queue} >> {$logFile} 2>&1 &");
-        }
-
-        if ($toStart > 0) {
-            \Illuminate\Support\Facades\Log::info("Started {$toStart} {$queue} queue workers (had {$workerCount}/{$config['desired']})");
-        }
-    }
-})->everyMinute()->name('ensure-queue-workers');
-
+// Queue workers are managed by Supervisor (see /etc/supervisor/conf.d/auto-code-review.conf)

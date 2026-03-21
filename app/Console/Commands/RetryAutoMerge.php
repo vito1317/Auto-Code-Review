@@ -50,17 +50,10 @@ class RetryAutoMerge extends Command
             } catch (\Throwable $e) {
                 $this->warn("  ❌ Failed: {$e->getMessage()}");
 
-                // Post comment about failure
-                try {
-                    $github->createIssueComment(
-                        $repo->owner,
-                        $repo->repo,
-                        $task->pr_number,
-                        "⚠️ **Auto-Merge Failed**: {$e->getMessage()}\n\nPlease resolve conflicts and merge manually.",
-                    );
-                } catch (\Throwable) {
-                    // Ignore
-                }
+                Log::warning('RetryAutoMerge: merge failed', [
+                    'task' => $task->id,
+                    'error' => $e->getMessage(),
+                ]);
             }
         }
 

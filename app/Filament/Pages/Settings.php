@@ -4,24 +4,31 @@ namespace App\Filament\Pages;
 
 use App\Models\Setting;
 use App\Services\GitHubAppService;
+use Filament\Actions\Action;
 use Filament\Forms;
 use Filament\Forms\Concerns\InteractsWithForms;
 use Filament\Forms\Contracts\HasForms;
-use Filament\Forms\Form;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
+use Filament\Schemas\Components\Actions;
+use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\Tabs;
+use Filament\Schemas\Components\Utilities\Get;
+use Filament\Schemas\Components\Utilities\Set;
+use Filament\Schemas\Schema;
+use Illuminate\Support\Str;
 
 class Settings extends Page implements HasForms
 {
     use InteractsWithForms;
 
-    protected static ?string $navigationIcon = 'heroicon-o-cog-6-tooth';
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-cog-6-tooth';
 
-    protected static ?string $navigationGroup = 'Configuration';
+    protected static string|\UnitEnum|null $navigationGroup = 'Configuration';
 
     protected static ?int $navigationSort = 10;
 
-    protected static string $view = 'filament.pages.settings';
+    protected string $view = 'filament.pages.settings';
 
     public ?array $data = [];
 
@@ -51,13 +58,13 @@ class Settings extends Page implements HasForms
         ]);
     }
 
-    public function form(Form $form): Form
+    public function form(Schema $schema): Schema
     {
-        return $form
+        return $schema
             ->schema([
-                Forms\Components\Tabs::make('Settings')
+                Tabs::make('Settings')
                     ->tabs([
-                        Forms\Components\Tabs\Tab::make('Jules API')
+                        Tabs\Tab::make('Jules API')
                             ->icon('heroicon-o-sparkles')
                             ->schema([
                                 Forms\Components\TextInput::make('jules_api_key')
@@ -68,10 +75,10 @@ class Settings extends Page implements HasForms
                                     ->placeholder('Your Jules API Key'),
                             ]),
 
-                        Forms\Components\Tabs\Tab::make('GitHub')
+                        Tabs\Tab::make('GitHub')
                             ->icon('heroicon-o-code-bracket')
                             ->schema([
-                                Forms\Components\Section::make('GitHub App (Recommended)')
+                                Section::make('GitHub App (Recommended)')
                                     ->description('Higher rate limits (5,000/hr per installation). Create an App at github.com/settings/apps')
                                     ->schema([
                                         Forms\Components\TextInput::make('github_app_id')
@@ -90,8 +97,8 @@ class Settings extends Page implements HasForms
                                             ->placeholder('12345678')
                                             ->helperText('Install the App on your org, then check the URL: /installations/{ID}'),
 
-                                        Forms\Components\Actions::make([
-                                            Forms\Components\Actions\Action::make('test_github_app')
+                                        Actions::make([
+                                            Action::make('test_github_app')
                                                 ->label('Test Connection')
                                                 ->icon('heroicon-o-signal')
                                                 ->color('success')
@@ -108,7 +115,7 @@ class Settings extends Page implements HasForms
                                     ])
                                     ->collapsible(),
 
-                                Forms\Components\Section::make('Personal Access Token (Fallback)')
+                                Section::make('Personal Access Token (Fallback)')
                                     ->description('Used when GitHub App is not configured')
                                     ->schema([
                                         Forms\Components\TextInput::make('github_token')
@@ -121,7 +128,7 @@ class Settings extends Page implements HasForms
                                     ->collapsible()
                                     ->collapsed(),
 
-                                Forms\Components\Section::make('Webhook')
+                                Section::make('Webhook')
                                     ->description('All repositories share this webhook configuration')
                                     ->schema([
                                         Forms\Components\Placeholder::make('webhook_url')
@@ -135,16 +142,16 @@ class Settings extends Page implements HasForms
                                             ->revealable()
                                             ->helperText('Use this same secret for all GitHub webhook configurations.')
                                             ->suffixAction(
-                                                Forms\Components\Actions\Action::make('regenerate_webhook_secret')
+                                                Action::make('regenerate_webhook_secret')
                                                     ->icon('heroicon-o-arrow-path')
-                                                    ->action(function (Forms\Set $set) {
-                                                        $set('github_webhook_secret', \Illuminate\Support\Str::random(40));
+                                                    ->action(function (Set $set) {
+                                                        $set('github_webhook_secret', Str::random(40));
                                                     })
                                             ),
                                     ]),
                             ]),
 
-                        Forms\Components\Tabs\Tab::make('AI Review Engine')
+                        Tabs\Tab::make('AI Review Engine')
                             ->icon('heroicon-o-cpu-chip')
                             ->schema([
                                 Forms\Components\Select::make('ai_provider')
@@ -157,7 +164,7 @@ class Settings extends Page implements HasForms
                                     ->live()
                                     ->helperText('Select the AI engine for code reviews'),
 
-                                Forms\Components\Section::make('Gemini Settings')
+                                Section::make('Gemini Settings')
                                     ->schema([
                                         Forms\Components\TextInput::make('gemini_api_key')
                                             ->label('Gemini API Key')
@@ -171,9 +178,9 @@ class Settings extends Page implements HasForms
                                             ->default('gemini-2.0-flash')
                                             ->helperText('e.g., gemini-2.0-flash, gemini-1.5-pro'),
                                     ])
-                                    ->visible(fn (Forms\Get $get) => $get('ai_provider') === 'gemini'),
+                                    ->visible(fn (Get $get) => $get('ai_provider') === 'gemini'),
 
-                                Forms\Components\Section::make('LM Studio Settings')
+                                Section::make('LM Studio Settings')
                                     ->schema([
                                         Forms\Components\TextInput::make('lmstudio_base_url')
                                             ->label('Base URL')
@@ -185,10 +192,10 @@ class Settings extends Page implements HasForms
                                             ->placeholder('Leave blank for default loaded model')
                                             ->helperText('The model identifier loaded in LM Studio'),
                                     ])
-                                    ->visible(fn (Forms\Get $get) => $get('ai_provider') === 'lmstudio'),
+                                    ->visible(fn (Get $get) => $get('ai_provider') === 'lmstudio'),
                             ]),
 
-                        Forms\Components\Tabs\Tab::make('Auto-Fix')
+                        Tabs\Tab::make('Auto-Fix')
                             ->icon('heroicon-o-wrench-screwdriver')
                             ->schema([
                                 Forms\Components\Toggle::make('auto_fix_enabled')

@@ -4,9 +4,12 @@ namespace App\Filament\Resources;
 
 use App\Filament\Resources\RepositoryResource\Pages;
 use App\Models\Repository;
+use Filament\Actions;
 use Filament\Forms;
-use Filament\Forms\Form;
 use Filament\Resources\Resource;
+use Filament\Schemas\Components\Grid;
+use Filament\Schemas\Components\Section;
+use Filament\Schemas\Schema;
 use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
@@ -15,17 +18,18 @@ class RepositoryResource extends Resource
 {
     protected static ?string $model = Repository::class;
 
-    protected static ?string $navigationIcon = 'heroicon-o-code-bracket-square';
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-code-bracket-square';
 
-    protected static ?string $navigationGroup = 'Configuration';
+    protected static string|\UnitEnum|null $navigationGroup = 'Configuration';
 
     protected static ?int $navigationSort = 1;
 
-    public static function form(Form $form): Form
+    public static function form(Schema $schema): Schema
     {
-        return $form->schema([
-            Forms\Components\Section::make('Repository Info')
+        return $schema->schema([
+            Section::make('Repository Info')
                 ->description('GitHub repository details')
+                ->columnSpanFull()
                 ->schema([
                     Forms\Components\TextInput::make('name')
                         ->label('Display Name')
@@ -33,7 +37,7 @@ class RepositoryResource extends Resource
                         ->maxLength(255)
                         ->placeholder('My Project'),
 
-                    Forms\Components\Grid::make(2)->schema([
+                    Grid::make(2)->schema([
                         Forms\Components\TextInput::make('owner')
                             ->label('GitHub Owner')
                             ->required()
@@ -59,7 +63,8 @@ class RepositoryResource extends Resource
                         ->maxLength(500),
                 ]),
 
-            Forms\Components\Section::make('Settings')
+            Section::make('Settings')
+                ->columnSpanFull()
                 ->schema([
                     Forms\Components\Toggle::make('is_active')
                         ->label('Active')
@@ -147,8 +152,8 @@ class RepositoryResource extends Resource
                     ->label('Active Status'),
             ])
             ->actions([
-                Tables\Actions\EditAction::make(),
-                Tables\Actions\Action::make('toggle_active')
+                Actions\EditAction::make(),
+                Actions\Action::make('toggle_active')
                     ->label(fn (Repository $record) => $record->is_active ? 'Deactivate' : 'Activate')
                     ->icon(fn (Repository $record) => $record->is_active ? 'heroicon-o-pause' : 'heroicon-o-play')
                     ->color(fn (Repository $record) => $record->is_active ? 'warning' : 'success')
@@ -156,8 +161,8 @@ class RepositoryResource extends Resource
                     ->action(fn (Repository $record) => $record->update(['is_active' => ! $record->is_active])),
             ])
             ->bulkActions([
-                Tables\Actions\BulkActionGroup::make([
-                    Tables\Actions\DeleteBulkAction::make(),
+                Actions\BulkActionGroup::make([
+                    Actions\DeleteBulkAction::make(),
                 ]),
             ]);
     }

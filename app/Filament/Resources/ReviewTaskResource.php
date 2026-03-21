@@ -3,25 +3,32 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\ReviewTaskResource\Pages;
+use App\Jobs\AiMergeJob;
+use App\Jobs\ReviewPrJob;
 use App\Models\ReviewTask;
+use App\Services\GitHubApiService;
+use Filament\Actions;
 use Filament\Forms;
-use Filament\Forms\Form;
 use Filament\Infolists;
-use Filament\Infolists\Infolist;
+use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
+use Filament\Schemas\Components\Section;
+use Filament\Schemas\Schema;
 use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Str;
 
 class ReviewTaskResource extends Resource
 {
     protected static ?string $model = ReviewTask::class;
 
-    protected static ?string $navigationIcon = 'heroicon-o-clipboard-document-check';
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-clipboard-document-check';
 
     protected static ?string $navigationLabel = 'Review Tasks';
 
-    protected static ?string $navigationGroup = 'Reviews';
+    protected static string|\UnitEnum|null $navigationGroup = 'Reviews';
 
     protected static ?int $navigationSort = 1;
 
@@ -31,17 +38,19 @@ class ReviewTaskResource extends Resource
             ->whereHas('repository', fn (Builder $q) => $q->where('user_id', auth()->id()));
     }
 
-    public static function form(Form $form): Form
+    public static function form(Schema $schema): Schema
     {
-        return $form->schema([
-            Forms\Components\Section::make('PR Information')
+        return $schema->schema([
+            Section::make('PR Information')
+                ->columnSpanFull()
                 ->schema([
                     Forms\Components\TextInput::make('pr_title')->disabled(),
                     Forms\Components\TextInput::make('pr_url')->disabled()->url(),
                     Forms\Components\TextInput::make('pr_author')->disabled(),
                     Forms\Components\TextInput::make('pr_number')->disabled(),
                 ]),
-            Forms\Components\Section::make('Review Status')
+            Section::make('Review Status')
+                ->columnSpanFull()
                 ->schema([
                     Forms\Components\Select::make('status')
                         ->options([
@@ -62,10 +71,10 @@ class ReviewTaskResource extends Resource
         ]);
     }
 
-    public static function infolist(Infolist $infolist): Infolist
+    public static function infolist(Schema $schema): Schema
     {
-        return $infolist->schema([
-            Infolists\Components\Section::make('Pull Request')
+        return $schema->schema([
+            Section::make('Pull Request')
                 ->columns(2)
                 ->schema([
                     Infolists\Components\TextEntry::make('pr_title')
@@ -88,7 +97,7 @@ class ReviewTaskResource extends Resource
                         ->color('gray'),
                 ]),
 
-            Infolists\Components\Section::make('Review Status')
+            Section::make('Review Status')
                 ->columns(3)
                 ->schema([
                     Infolists\Components\TextEntry::make('status')
@@ -110,7 +119,7 @@ class ReviewTaskResource extends Resource
                         ->dateTime(),
                 ]),
 
-            Infolists\Components\Section::make('Review Summary')
+            Section::make('Review Summary')
                 ->schema([
                     Infolists\Components\TextEntry::make('review_summary')
                         ->label('')
@@ -119,7 +128,7 @@ class ReviewTaskResource extends Resource
                 ])
                 ->visible(fn ($record) => $record->review_summary),
 
-            Infolists\Components\Section::make('Jules Auto-Fix')
+            Section::make('Jules Auto-Fix')
                 ->schema([
                     Infolists\Components\TextEntry::make('jules_session_id')
                         ->label('Session ID'),
@@ -133,7 +142,7 @@ class ReviewTaskResource extends Resource
                 ])
                 ->visible(fn ($record) => $record->jules_session_id),
 
-            Infolists\Components\Section::make('AI Merge')
+            Section::make('AI Merge')
                 ->columns(2)
                 ->schema([
                     Infolists\Components\TextEntry::make('ai_merge_status')
@@ -159,7 +168,7 @@ class ReviewTaskResource extends Resource
                 ])
                 ->visible(fn ($record) => $record->ai_merge_status),
 
-            Infolists\Components\Section::make('Merge')
+            Section::make('Merge')
                 ->columns(2)
                 ->schema([
                     Infolists\Components\TextEntry::make('merge_status')
@@ -185,7 +194,7 @@ class ReviewTaskResource extends Resource
                 ])
                 ->visible(fn ($record) => $record->merge_status),
 
-            Infolists\Components\Section::make('Error')
+            Section::make('Error')
                 ->schema([
                     Infolists\Components\TextEntry::make('error_message')
                         ->label('')
@@ -193,7 +202,7 @@ class ReviewTaskResource extends Resource
                 ])
                 ->visible(fn ($record) => $record->error_message),
 
-            Infolists\Components\Section::make('Review Findings')
+            Section::make('Review Findings')
                 ->description(fn ($record) => $record->comments->count().' issue(s) found')
                 ->schema([
                     Infolists\Components\RepeatableEntry::make('comments')
@@ -229,7 +238,7 @@ class ReviewTaskResource extends Resource
                 ->visible(fn ($record) => $record->comments->count() > 0)
                 ->collapsible(),
 
-            Infolists\Components\Section::make('Diff Content')
+            Section::make('Diff Content')
                 ->schema([
                     Infolists\Components\TextEntry::make('diff_content')
                         ->label('')
@@ -241,7 +250,7 @@ class ReviewTaskResource extends Resource
                 ->collapsible()
                 ->collapsed(),
 
-            Infolists\Components\Section::make('AI Raw Output')
+            Section::make('AI Raw Output')
                 ->schema([
                     Infolists\Components\TextEntry::make('ai_raw_output')
                         ->label('')
@@ -266,7 +275,7 @@ class ReviewTaskResource extends Resource
                     'review_tasks.pr_status', 'review_tasks.ai_merge_status', 'review_tasks.ai_merge_message',
                     'review_tasks.merge_status', 'review_tasks.merge_message', 'review_tasks.status',
                     'review_tasks.jules_session_id', 'review_tasks.jules_fix_pr_url', 'review_tasks.iteration',
-                    'review_tasks.error_message', 'review_tasks.created_at', 'review_tasks.updated_at'
+                    'review_tasks.error_message', 'review_tasks.created_at', 'review_tasks.updated_at',
                 ]);
             })
             ->defaultSort('created_at', 'desc')
@@ -420,8 +429,8 @@ class ReviewTaskResource extends Resource
                     ]),
             ])
             ->actions([
-                Tables\Actions\ViewAction::make(),
-                Tables\Actions\Action::make('retry')
+                Actions\ViewAction::make(),
+                Actions\Action::make('retry')
                     ->label('Retry Review')
                     ->icon('heroicon-o-arrow-path')
                     ->color('warning')
@@ -433,9 +442,9 @@ class ReviewTaskResource extends Resource
                             'error_message' => null,
                             'iteration' => $record->iteration + 1,
                         ]);
-                        \App\Jobs\ReviewPrJob::dispatch($record);
+                        ReviewPrJob::dispatch($record);
                     }),
-                Tables\Actions\Action::make('merge')
+                Actions\Action::make('merge')
                     ->label('Merge PR')
                     ->icon('heroicon-o-check-circle')
                     ->color('success')
@@ -444,7 +453,7 @@ class ReviewTaskResource extends Resource
                     ->modalDescription(fn (ReviewTask $record) => "Merge PR #{$record->pr_number}: {$record->pr_title}?")
                     ->visible(fn (ReviewTask $record) => $record->pr_status === 'open' && in_array($record->status, ['approved', 'fixed', 'commented']))
                     ->action(function (ReviewTask $record) {
-                        $github = app(\App\Services\GitHubApiService::class)->forUser(auth()->id());
+                        $github = app(GitHubApiService::class)->forUser(auth()->id());
                         $repo = $record->repository;
                         try {
                             $github->mergePullRequest(
@@ -454,20 +463,20 @@ class ReviewTaskResource extends Resource
                                 "Merge PR #{$record->pr_number}: {$record->pr_title}",
                             );
                             $record->update(['pr_status' => ReviewTask::PR_STATUS_MERGED]);
-                            \Filament\Notifications\Notification::make()
+                            Notification::make()
                                 ->title("PR #{$record->pr_number} merged successfully")
                                 ->success()
                                 ->send();
                         } catch (\Throwable $e) {
                             $msg = $e->getMessage();
-                            \Filament\Notifications\Notification::make()
+                            Notification::make()
                                 ->title('Merge failed')
-                                ->body(str_contains($msg, 'not mergeable') ? 'PR has merge conflicts' : \Illuminate\Support\Str::limit($msg, 100))
+                                ->body(str_contains($msg, 'not mergeable') ? 'PR has merge conflicts' : Str::limit($msg, 100))
                                 ->danger()
                                 ->send();
                         }
                     }),
-                Tables\Actions\Action::make('ai_merge')
+                Actions\Action::make('ai_merge')
                     ->label('AI Merge')
                     ->icon('heroicon-o-sparkles')
                     ->color('info')
@@ -477,27 +486,27 @@ class ReviewTaskResource extends Resource
                     ->visible(fn (ReviewTask $record) => $record->pr_status === 'open' && in_array($record->status, ['approved', 'fixed', 'commented']))
                     ->action(function (ReviewTask $record) {
                         $record->update(['ai_merge_status' => ReviewTask::AI_MERGE_PENDING, 'ai_merge_message' => 'Queued for AI merge']);
-                        \App\Jobs\AiMergeJob::dispatch($record, auth()->id());
-                        \Filament\Notifications\Notification::make()
+                        AiMergeJob::dispatch($record, auth()->id());
+                        Notification::make()
                             ->title("AI Merge started for PR #{$record->pr_number}")
                             ->body('Running in background. Refresh to see results.')
                             ->success()
                             ->send();
                     }),
-                Tables\Actions\Action::make('view_github')
+                Actions\Action::make('view_github')
                     ->label('View PR')
                     ->icon('heroicon-o-arrow-top-right-on-square')
                     ->url(fn (ReviewTask $record) => $record->pr_url)
                     ->openUrlInNewTab(),
             ])
             ->bulkActions([
-                Tables\Actions\BulkAction::make('retry_selected')
+                Actions\BulkAction::make('retry_selected')
                     ->label('Retry Selected')
                     ->icon('heroicon-o-arrow-path')
                     ->color('warning')
                     ->requiresConfirmation()
                     ->deselectRecordsAfterCompletion()
-                    ->action(function (\Illuminate\Database\Eloquent\Collection $records) {
+                    ->action(function (Collection $records) {
                         $count = 0;
                         foreach ($records as $record) {
                             if (! in_array($record->status, ['failed', 'commented'])) {
@@ -508,23 +517,23 @@ class ReviewTaskResource extends Resource
                                 'error_message' => null,
                                 'iteration' => $record->iteration + 1,
                             ]);
-                            \App\Jobs\ReviewPrJob::dispatch($record);
+                            ReviewPrJob::dispatch($record);
                             $count++;
                         }
 
-                        \Filament\Notifications\Notification::make()
+                        Notification::make()
                             ->title("Retrying {$count} tasks")
                             ->success()
                             ->send();
                     }),
-                Tables\Actions\BulkAction::make('merge_selected')
+                Actions\BulkAction::make('merge_selected')
                     ->label('Merge Selected')
                     ->icon('heroicon-o-check-circle')
                     ->color('success')
                     ->requiresConfirmation()
                     ->deselectRecordsAfterCompletion()
-                    ->action(function (\Illuminate\Database\Eloquent\Collection $records) {
-                        $github = app(\App\Services\GitHubApiService::class)->forUser(auth()->id());
+                    ->action(function (Collection $records) {
+                        $github = app(GitHubApiService::class)->forUser(auth()->id());
                         $merged = 0;
                         $failed = 0;
                         foreach ($records as $record) {
@@ -543,29 +552,29 @@ class ReviewTaskResource extends Resource
                             }
                         }
 
-                        \Filament\Notifications\Notification::make()
+                        Notification::make()
                             ->title("Merged {$merged} PRs".($failed ? ", {$failed} failed" : ''))
                             ->color($failed ? 'warning' : 'success')
                             ->send();
                     }),
-                Tables\Actions\BulkAction::make('ai_merge_selected')
+                Actions\BulkAction::make('ai_merge_selected')
                     ->label('AI Merge Selected')
                     ->icon('heroicon-o-sparkles')
                     ->color('info')
                     ->requiresConfirmation()
                     ->deselectRecordsAfterCompletion()
-                    ->action(function (\Illuminate\Database\Eloquent\Collection $records) {
+                    ->action(function (Collection $records) {
                         $userId = auth()->id();
                         $count = 0;
                         foreach ($records as $record) {
                             if ($record->pr_status === 'open') {
                                 $record->update(['ai_merge_status' => ReviewTask::AI_MERGE_PENDING, 'ai_merge_message' => 'Queued for AI merge']);
-                                \App\Jobs\AiMergeJob::dispatch($record, $userId);
+                                AiMergeJob::dispatch($record, $userId);
                                 $count++;
                             }
                         }
 
-                        \Filament\Notifications\Notification::make()
+                        Notification::make()
                             ->title("AI Merge dispatched for {$count} PRs")
                             ->body('Processing in background. Refresh to see results.')
                             ->success()

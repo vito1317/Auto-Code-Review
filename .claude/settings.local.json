@@ -1,0 +1,45 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(php artisan:*)",
+      "mcp__laravel-boost__search-docs",
+      "Bash(composer show:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(composer update:*)",
+      "Bash(find /home/vito/Auto-Code-Review/resources/views -type f -name *.blade.php)",
+      "Bash(xargs grep:*)",
+      "WebFetch(domain:filamentphp.com)",
+      "Bash(composer dump-autoload:*)",
+      "Bash(grep -n 'protected static.*$navigationGroup' vendor/filament/filament/src/Resources/Resource.php)",
+      "Bash(grep -rn 'protected static.*$navigationGroup' vendor/filament/support/src/)",
+      "Bash(grep -rn $navigationGroup vendor/filament/ --include=*.php -l)",
+      "Bash(php:*)",
+      "Bash(grep:*)",
+      "Bash(vendor/bin/pint --dirty --format agent 2>&1)",
+      "Bash(for class:*)",
+      "Bash(do echo:*)",
+      "Bash(find vendor/filament/schemas/src/Components -name \"$class\" -maxdepth 1)",
+      "Bash(find vendor/filament/forms/src/Components -name \"$class\" -maxdepth 1)",
+      "Bash(done)",
+      "mcp__laravel-boost__last-error",
+      "mcp__laravel-boost__read-log-entries",
+      "mcp__laravel-boost__browser-logs",
+      "Bash(xargs ls:*)",
+      "Bash(supervisord --version)",
+      "Bash(apt list:*)",
+      "Bash(dpkg -l)",
+      "Bash(apt-get install:*)",
+      "Bash(pkill -f \"artisan queue:work.*--queue=reviews\" -u vito)",
+      "Bash(pkill -f \"artisan queue:work.*--queue=merges\" -u vito)",
+      "Bash(supervisorctl reread:*)",
+      "Bash(supervisorctl update:*)",
+      "Bash(systemctl enable:*)",
+      "Bash(supervisorctl restart:*)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "laravel-boost"
+  ]
+}

@@ -3,7 +3,10 @@
 namespace App\Filament\Resources\ReviewTaskResource\Pages;
 
 use App\Filament\Resources\ReviewTaskResource;
-use App\Jobs\ReviewPrJob;
+use App\Jobs\AiMergeJob;
+use App\Jobs\MergePrJob;
+use App\Jobs\RetryFailedTasksJob;
+use App\Jobs\SyncPrStatusJob;
 use App\Models\ReviewTask;
 use Filament\Actions;
 use Filament\Notifications\Notification;
@@ -22,15 +25,15 @@ class ListReviewTasks extends ListRecords
                 ->color('warning')
                 ->requiresConfirmation()
                 ->modalHeading('Retry All Failed Tasks')
-                ->modalDescription('This will reset all failed tasks to pending and re-dispatch them for review. Are you sure?')
+                ->modalDescription('This will reset all failed tasks to pending and re-dispatch them for review in the background. Are you sure?')
                 ->modalSubmitActionLabel('Retry All')
                 ->action(function () {
-                    $query = ReviewTask::where('status', ReviewTask::STATUS_FAILED)
-                        ->whereHas('repository', fn ($q) => $q->where('user_id', auth()->id()));
+                    $count = ReviewTask::where('status', ReviewTask::STATUS_FAILED)
+                        ->where('pr_status', ReviewTask::PR_STATUS_OPEN)
+                        ->whereHas('repository', fn ($q) => $q->where('user_id', auth()->id()))
+                        ->count();
 
-                    $tasks = $query->get();
-
-                    if ($tasks->isEmpty()) {
+                    if ($count === 0) {
                         Notification::make()
                             ->title('No failed tasks found')
                             ->info()
@@ -39,19 +42,11 @@ class ListReviewTasks extends ListRecords
                         return;
                     }
 
-                    $count = 0;
-                    foreach ($tasks as $task) {
-                        $task->update([
-                            'status' => ReviewTask::STATUS_PENDING,
-                            'error_message' => null,
-                            'iteration' => $task->iteration + 1,
-                        ]);
-                        ReviewPrJob::dispatch($task);
-                        $count++;
-                    }
+                    RetryFailedTasksJob::dispatch(auth()->id());
 
                     Notification::make()
                         ->title("Retrying {$count} failed tasks")
+                        ->body('Processing in background. Refresh to see progress.')
                         ->success()
                         ->send();
                 }),
@@ -61,19 +56,17 @@ class ListReviewTasks extends ListRecords
                 ->color('success')
                 ->requiresConfirmation()
                 ->modalHeading('Merge All Approved PRs')
-                ->modalDescription('This will attempt to merge all approved/fixed PRs. Are you sure?')
+                ->modalDescription('This will attempt to merge all approved/fixed PRs in the background. Are you sure?')
                 ->modalSubmitActionLabel('Merge All')
                 ->action(function () {
-                    $query = ReviewTask::latestIteration()->whereIn('status', [
+                    $count = ReviewTask::latestIteration()->whereIn('status', [
                         ReviewTask::STATUS_APPROVED,
                         ReviewTask::STATUS_FIXED,
                     ])->where('pr_status', ReviewTask::PR_STATUS_OPEN)
                         ->whereHas('repository', fn ($q) => $q->where('user_id', auth()->id()))
-                        ->with('repository');
+                        ->count();
 
-                    $tasks = $query->get();
-
-                    if ($tasks->isEmpty()) {
+                    if ($count === 0) {
                         Notification::make()
                             ->title('No approved tasks to merge')
                             ->info()
@@ -83,20 +76,30 @@ class ListReviewTasks extends ListRecords
                     }
 
                     $userId = auth()->id();
-                    $delay = 0;
-                    foreach ($tasks as $task) {
-                        $task->update([
+                    $tasks = ReviewTask::latestIteration()->whereIn('status', [
+                        ReviewTask::STATUS_APPROVED,
+                        ReviewTask::STATUS_FIXED,
+                    ])->where('pr_status', ReviewTask::PR_STATUS_OPEN)
+                        ->whereHas('repository', fn ($q) => $q->where('user_id', $userId))
+                        ->select(['id', 'merge_status', 'merge_message'])
+                        ->get();
+
+                    ReviewTask::whereIn('id', $tasks->pluck('id'))
+                        ->update([
                             'merge_status' => ReviewTask::MERGE_QUEUED,
                             'merge_message' => 'Queued for merge',
                         ]);
-                        \App\Jobs\MergePrJob::dispatch($task, $userId)
+
+                    $delay = 0;
+                    foreach ($tasks as $task) {
+                        MergePrJob::dispatch($task, $userId)
                             ->delay(now()->addSeconds($delay));
-                        $delay += 5; // 5-second gap between each merge
+                        $delay += 5;
                     }
 
                     Notification::make()
-                        ->title("Queued {$tasks->count()} PRs for merging")
-                        ->body('Merges are running in the background. Refresh the page in a moment to see updated statuses.')
+                        ->title("Queued {$count} PRs for merging")
+                        ->body('Merges are running in the background. Refresh to see progress.')
                         ->success()
                         ->send();
                 }),
@@ -109,7 +112,7 @@ class ListReviewTasks extends ListRecords
                 ->modalDescription('This will fetch the current status (open/closed/merged) of all open PRs from GitHub in the background.')
                 ->modalSubmitActionLabel('Sync')
                 ->action(function () {
-                    \App\Jobs\SyncPrStatusJob::dispatch(auth()->id());
+                    SyncPrStatusJob::dispatch(auth()->id());
 
                     Notification::make()
                         ->title('PR status sync started')
@@ -126,17 +129,16 @@ class ListReviewTasks extends ListRecords
                 ->modalDescription('This will use AI to resolve merge conflicts for all approved/fixed PRs that are still open. Each PR will be processed in the background.')
                 ->modalSubmitActionLabel('Start AI Merge')
                 ->action(function () {
-                    $query = ReviewTask::latestIteration()
+                    $tasks = ReviewTask::latestIteration()
                         ->where('pr_status', ReviewTask::PR_STATUS_OPEN)
-                        ->whereNull('ai_merge_status') // Skip already processed
+                        ->whereNull('ai_merge_status')
                         ->whereIn('status', [
                             ReviewTask::STATUS_APPROVED,
                             ReviewTask::STATUS_FIXED,
                         ])
                         ->whereHas('repository', fn ($q) => $q->where('user_id', auth()->id()))
-                        ->with('repository');
-
-                    $tasks = $query->get();
+                        ->select(['id', 'ai_merge_status', 'ai_merge_message'])
+                        ->get();
 
                     if ($tasks->isEmpty()) {
                         Notification::make()
@@ -147,13 +149,18 @@ class ListReviewTasks extends ListRecords
                         return;
                     }
 
+                    ReviewTask::whereIn('id', $tasks->pluck('id'))
+                        ->update([
+                            'ai_merge_status' => ReviewTask::AI_MERGE_PENDING,
+                            'ai_merge_message' => 'Queued for AI merge',
+                        ]);
+
                     $userId = auth()->id();
                     $delay = 0;
                     foreach ($tasks as $task) {
-                        $task->update(['ai_merge_status' => ReviewTask::AI_MERGE_PENDING, 'ai_merge_message' => 'Queued for AI merge']);
-                        \App\Jobs\AiMergeJob::dispatch($task, $userId)
+                        AiMergeJob::dispatch($task, $userId)
                             ->delay(now()->addSeconds($delay));
-                        $delay += 30; // 30-second gap — AI merge is slow (AI API + GitHub API per file)
+                        $delay += 30;
                     }
 
                     Notification::make()
