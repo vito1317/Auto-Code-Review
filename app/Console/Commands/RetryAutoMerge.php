@@ -16,8 +16,11 @@ class RetryAutoMerge extends Command
     public function handle(GitHubApiService $github): int
     {
         $tasks = ReviewTask::whereIn('status', [ReviewTask::STATUS_APPROVED, ReviewTask::STATUS_FIXED])
+            ->where('pr_status', ReviewTask::PR_STATUS_OPEN) // Only if it's currently open
+            ->where('created_at', '>=', now()->subDays(7))   // Limit to recent PRs
             ->whereHas('repository', fn ($q) => $q->where('auto_merge', true))
             ->with('repository')
+            ->limit(30) // Max 30 merges per cycle to avoid API rate limits
             ->get();
 
         if ($tasks->isEmpty()) {

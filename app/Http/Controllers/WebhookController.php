@@ -24,23 +24,44 @@ class WebhookController extends Controller
             return response('pong', 200);
         }
 
-        // Only process pull_request events
-        if ($event !== 'pull_request') {
+        // Only process pull_request and issue_comment events
+        if (! in_array($event, ['pull_request', 'issue_comment'])) {
             return response('Event ignored', 200);
         }
 
         $data = $request->json()->all();
         $action = $data['action'] ?? '';
 
-        // Only process opened and synchronize (new commits pushed) actions
-        if (! in_array($action, ['opened', 'synchronize'])) {
-            Log::info('PR action ignored', ['action' => $action]);
+        if ($event === 'issue_comment') {
+            if ($action !== 'created') {
+                return response('Comment action ignored', 200);
+            }
 
-            return response('Action ignored', 200);
+            if (!isset($data['issue']['pull_request'])) {
+                return response('Not a pull request comment', 200);
+            }
+
+            $commentBody = $data['comment']['body'] ?? '';
+            if (!str_contains($commentBody, '@Auto-Code-Review')) {
+                return response('No @Auto-Code-Review mention', 200);
+            }
+
+            Log::info('Manual review trigger received via comment', ['pr' => $data['issue']['number']]);
+
+            $prData = $data['issue'];
+            $repoData = $data['repository'] ?? [];
+            $action = 'synchronize'; // Simulate a push event to trigger review
+        } else {
+            // Only process opened and synchronize (new commits pushed) actions
+            if (! in_array($action, ['opened', 'synchronize'])) {
+                Log::info('PR action ignored', ['action' => $action]);
+
+                return response('Action ignored', 200);
+            }
+
+            $prData = $data['pull_request'] ?? [];
+            $repoData = $data['repository'] ?? [];
         }
-
-        $prData = $data['pull_request'] ?? [];
-        $repoData = $data['repository'] ?? [];
 
         $owner = $repoData['owner']['login'] ?? '';
         $repo = $repoData['name'] ?? '';
@@ -70,7 +91,7 @@ class WebhookController extends Controller
 
         $prNumber = $prData['number'] ?? 0;
         $prTitle = $prData['title'] ?? '';
-        $prUrl = $prData['html_url'] ?? '';
+        $prUrl = $event === 'issue_comment' ? ($prData['pull_request']['html_url'] ?? '') : ($prData['html_url'] ?? '');
         $prAuthor = $prData['user']['login'] ?? '';
 
         // Check if we already have a task for this PR

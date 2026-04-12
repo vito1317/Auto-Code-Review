@@ -27,7 +27,10 @@ class SyncPrStatusJob implements ShouldQueue
 
     public function handle(GitHubApiService $github): void
     {
-        $query = ReviewTask::whereIn('pr_status', [ReviewTask::PR_STATUS_OPEN, ReviewTask::PR_STATUS_CLOSED])
+        // Only sync status for PRs that are currently open and were created recently
+        // to prevent mass GitHub API rate limiting from polling ancient PRs.
+        $query = ReviewTask::where('pr_status', ReviewTask::PR_STATUS_OPEN)
+            ->where('created_at', '>=', now()->subDays(14))
             ->with('repository');
 
         if ($this->userId) {

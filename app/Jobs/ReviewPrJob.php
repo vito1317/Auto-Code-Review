@@ -22,7 +22,7 @@ class ReviewPrJob implements ShouldQueue
 
     public int $backoff = 30;
 
-    public int $timeout = 120;
+    public int $timeout = 1200;
 
     public function __construct(
         public ReviewTask $task,

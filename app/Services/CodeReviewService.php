@@ -43,7 +43,7 @@ class CodeReviewService
 
         $prompt = $this->buildFullPrompt($diff, $config);
 
-        $response = Http::timeout(120)->post($url, [
+        $response = Http::timeout(300)->post($url, [
             'contents' => [
                 ['role' => 'user', 'parts' => [['text' => $prompt]]],
             ],
@@ -88,7 +88,7 @@ class CodeReviewService
             'max_tokens' => 4096,
         ];
 
-        $response = Http::timeout(180)->post($url, $payload);
+        $response = Http::timeout(1200)->post($url, $payload);
 
         if ($response->failed()) {
             Log::error('LM Studio API failed', ['status' => $response->status(), 'body' => $response->body()]);

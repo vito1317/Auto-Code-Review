@@ -22,6 +22,7 @@ class RetryFailedTasksJob implements ShouldQueue
     {
         $tasks = ReviewTask::where('status', ReviewTask::STATUS_FAILED)
             ->where('pr_status', ReviewTask::PR_STATUS_OPEN)
+            ->where('created_at', '>=', now()->subDays(7))
             ->whereHas('repository', fn ($q) => $q->where('user_id', $this->userId))
             ->get();
 
