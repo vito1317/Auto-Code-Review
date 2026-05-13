@@ -35,7 +35,10 @@
       "Bash(supervisorctl reread:*)",
       "Bash(supervisorctl update:*)",
       "Bash(systemctl enable:*)",
-      "Bash(supervisorctl restart:*)"
+      "Bash(supervisorctl restart:*)",
+      "mcp__laravel-boost__database-query",
+      "Bash(vendor/bin/pint *)",
+      "mcp__laravel-boost__database-schema"
     ]
   },
   "enableAllProjectMcpServers": true,

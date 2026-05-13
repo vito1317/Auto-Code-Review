@@ -37,6 +37,7 @@ class PollNewPullRequests extends Command
                             ReviewTask::STATUS_COMMENTED,
                             ReviewTask::STATUS_FIXING,
                             ReviewTask::STATUS_FIXED,
+                            ReviewTask::STATUS_APPROVED,
                         ])
                         ->first();
 
